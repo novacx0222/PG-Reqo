@@ -44,7 +44,7 @@ def train(dbname, reqo_config, k_i, trainset, testset, save_path, query_plans_in
 
     # criteon_logmse = LogMSELoss()
     criteon_data_uncertainty = DataUncertaintyLoss()
-    criteon_ranking = PairRankingLoss()
+    criteon_ranking = PairRankingLoss(margin=reqo_config["pairrankingloss_margin"])
     optimizer = optim.Adam(model.parameters(), lr=reqo_config["learning_rate"])
 
     epochs = 100
