@@ -47,7 +47,7 @@ def train_with_explanation(dbname, reqo_config, k_i, trainset, testset, save_pat
     model = model.to(device)
 
     criteon_data_uncertainty = DataUncertaintyLoss()
-    criteon_ranking = PairRankingLoss()
+    criteon_ranking = PairRankingLoss(margin=reqo_config["pairrankingloss_margin"])
     criteon_explanation = ExplanationLoss()
     optimizer = optim.Adam(model.parameters(), lr=reqo_config["learning_rate"])
 
@@ -215,3 +215,4 @@ if __name__ == "__main__":
               'explainer_fcn_layers': 4, 'explainer_explanation_embedding_dim': 512, 'explainer_fcn_dropout_rate': 0.1,
               'estimator_fcn_layers': 4, 'estimator_estimation_embedding_dim': 512, 'estimator_fcn_dropout_rate': 0.1}
     k_fold_train_with_explanation(dbname, reqo_config, k=10)
+
