@@ -95,8 +95,8 @@ class Estimator(torch.nn.Module):
             self.fcn_layers_for_v.append(Linear(in_dim, out_dim))
 
         self.fcn_layers_for_v_activation = Softplus()
-        # self.fs = Sequential(Linear(2, 8), Linear(8, 1), Sigmoid())
-        self.fs = Sequential(Linear(2+estimation_embedding_dim, 16), Linear(16, 8), Linear(8, 1), Sigmoid())
+        self.fs = Sequential(Linear(2, 8), Linear(8, 1), Sigmoid())
+        # self.fs = Sequential(Linear(2+estimation_embedding_dim, 16), Linear(16, 8), Linear(8, 1), Sigmoid())
         
         self.dropout = Dropout(p=self.fcn_dropout_rate)
 
@@ -116,8 +116,8 @@ class Estimator(torch.nn.Module):
         x_v = self.fcn_layers_for_v_activation(self.fcn_layers_for_v[-1](x_v))
 
         # Integrate the estimated latency and quantified variance(uncertainty)
-        # x_iv = self.fs(torch.cat([x_e, x_v], dim=1))
-        x_iv = self.fs(torch.cat([x_e, x_v, x], dim=1))
+        x_iv = self.fs(torch.cat([x_e, x_v], dim=1))
+        # x_iv = self.fs(torch.cat([x_e, x_v, x], dim=1))
 
         return x_e, x_v, x_iv
 
