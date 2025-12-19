@@ -25,9 +25,12 @@ class DataUncertaintyLoss(torch.nn.Module):
         return torch.mean(loss)
 
 class PairRankingLoss(torch.nn.Module):
-    def __init__(self, margin=1.0):
-        super(PairRankingLoss, self).__init__()
+    def __init__(self, margin=1.0, use_upper_triangle=True, reduction="mean", exp_clip=50.0):
+        super().__init__()
         self.margin = margin
+        self.use_upper_triangle = use_upper_triangle
+        self.reduction = reduction
+        self.exp_clip = exp_clip  # to avoid overflow in exp
 
     def forward(self, cost, targets, max_num, min_num):
         n = len(targets)
@@ -35,19 +38,30 @@ class PairRankingLoss(torch.nn.Module):
         targets = (torch.log(targets + 1) - min_num) / (max_num - min_num)
         cost = cost.reshape(n)
 
-        targets_r = targets.repeat(n, 1)
-        targets_m = targets_r.transpose(0, 1) - targets_r
+        targets_m = targets[:, None] - targets[None, :]
+        cost_m    = cost[:, None] - cost[None, :]
 
-        cost_r = cost.repeat(n, 1)
-        cost_m = cost_r.transpose(0, 1) - cost_r
+        y = torch.sign(targets_m).detach()
+        valid = (y != 0)
 
-        targets_t = torch.sign(targets_m)
-        cost_t = torch.sign(cost_m)
+        if self.use_upper_triangle:
+            tri = torch.triu(torch.ones_like(valid, dtype=torch.bool), diagonal=1)
+            valid = valid & tri
 
-        incorrect_mask = targets_t != cost_t
+        yv = y[valid]
+        dv = cost_m[valid]
 
-        loss = torch.mean(incorrect_mask * torch.exp(self.margin + torch.abs(cost_m)))
+        s = yv * dv
+        wrong = (s < 0)
 
+        # only penalize wrong pairs
+        z = (self.margin - s).clamp(max=self.exp_clip)
+        loss = torch.where(wrong, torch.exp(z)-math.exp(self.margin), torch.zeros_like(z))
+
+        if self.reduction == "mean":
+            return loss.mean() if loss.numel() > 0 else dv.new_tensor(0.0)
+        if self.reduction == "sum":
+            return loss.sum()
         return loss
 
 class ExplanationLoss(torch.nn.Module):
@@ -60,3 +74,4 @@ class ExplanationLoss(torch.nn.Module):
         loss = self.explanation_loss(expl, local_labels)
 
         return loss
+
