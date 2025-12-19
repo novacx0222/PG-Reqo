@@ -96,7 +96,7 @@ class Estimator(torch.nn.Module):
 
         self.fcn_layers_for_v_activation = Softplus()
         self.fs = Sequential(Linear(2, 8), Linear(8, 1), Sigmoid())
-        # self.fs = Sequential(Linear(2+estimation_embedding_dim, 16), Linear(16, 8), Linear(8, 1), Sigmoid())
+        # self.fs = Sequential(Linear(2+estimation_embedding_dim, 16), Linear(16, 8), Linear(8, 1))
         
         self.dropout = Dropout(p=self.fcn_dropout_rate)
 
