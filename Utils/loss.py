@@ -25,7 +25,7 @@ class DataUncertaintyLoss(torch.nn.Module):
         return torch.mean(loss)
 
 class PairRankingLoss(torch.nn.Module):
-    def __init__(self, margin=1.0, use_upper_triangle=True, reduction="mean", exp_clip=50.0):
+    def __init__(self, margin=0.0, use_upper_triangle=True, reduction="mean", exp_clip=50.0):
         super().__init__()
         self.margin = margin
         self.use_upper_triangle = use_upper_triangle
@@ -74,4 +74,5 @@ class ExplanationLoss(torch.nn.Module):
         loss = self.explanation_loss(expl, local_labels)
 
         return loss
+
 
