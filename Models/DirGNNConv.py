@@ -3,6 +3,7 @@ import torch
 from torch import Tensor
 from torch_geometric.nn.conv import MessagePassing
 
+
 class DirGNNConv(torch.nn.Module):
     r"""A generic wrapper for computing graph convolution on directed
     graphs. :class:`DirGNNConv` will pass messages both from source nodes to target
@@ -18,11 +19,12 @@ class DirGNNConv(torch.nn.Module):
             transformed root node features to the output.
             (default: :obj:`True`)
     """
+
     def __init__(
-        self,
-        conv: MessagePassing,
-        alpha: float = 0.3,
-        root_weight: bool = True,
+            self,
+            conv: MessagePassing,
+            alpha: float = 0.3,
+            root_weight: bool = True,
     ):
         super().__init__()
 

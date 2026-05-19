@@ -2,7 +2,9 @@ import torch
 from torch.nn import Linear, ModuleList, MaxPool2d, Dropout, Sequential, Sigmoid, Softplus
 from torch_geometric.nn import TransformerConv, BatchNorm, GRUAggregation
 from .DirGNNConv import DirGNNConv
+
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
 
 class Feature_encoder(torch.nn.Module):
     def __init__(self, encoder_params):
@@ -36,8 +38,9 @@ class Feature_encoder(torch.nn.Module):
         node_table_enc = torch.cat(pooled, dim=1)
 
         # Concatenate all features
-        encoded_node_features = torch.cat([node_type_enc,node_stats_enc,  node_table_used, node_table_enc], dim=1)
+        encoded_node_features = torch.cat([node_type_enc, node_stats_enc, node_table_used, node_table_enc], dim=1)
         return encoded_node_features
+
 
 class BiGG(torch.nn.Module):
     def __init__(self, encoder_params, node_feature_dim):
@@ -69,9 +72,10 @@ class BiGG(torch.nn.Module):
         num = 0
         for i in range(len(batch_subtree_index)):
             num += len(subtree_index[batch_subtree_index[i]])
-        assert  num == len(x), f"Number of nodes mismatch! Expected {num}, but got {len(x)}"
+        assert num == len(x), f"Number of nodes mismatch! Expected {num}, but got {len(x)}"
 
-        batch_index_all, global_tree_index, batch_global_labels, batch_local_labels = self.prepare_batches_for_subtrees(batch_subtree_index, subtree_index, subtree_labels)
+        batch_index_all, global_tree_index, batch_global_labels, batch_local_labels = self.prepare_batches_for_subtrees(
+            batch_subtree_index, subtree_index, subtree_labels)
 
         for i in range(self.n_conv_layers):
             x = self.conv_layers[i](x, edge_index)
@@ -83,7 +87,7 @@ class BiGG(torch.nn.Module):
 
         g = torch.tensor(global_tree_index, device=device)
         starts = torch.cat([g.new_tensor([-1]), g[:-1]])
-        counts = g - starts 
+        counts = g - starts
         tree_ids = torch.repeat_interleave(torch.arange(len(g), device=device), counts)
         global_idx = g[tree_ids]
         M = torch.cat([x, x[global_idx]], dim=1)
@@ -171,7 +175,7 @@ class Estimator(torch.nn.Module):
         self.dropout = Dropout(p=self.fcn_dropout_rate)
 
     def forward(self, x):
-        for i in range(self.n_fcn_layers-1):
+        for i in range(self.n_fcn_layers - 1):
             x = self.dropout(torch.relu(self.fcn_layers[i](x)))
         x = torch.relu(self.fcn_layers[-1](x))
 
@@ -190,20 +194,23 @@ class Estimator(torch.nn.Module):
 
         return x_e, x_v, x_iv
 
+
 class Reqo(torch.nn.Module):
     def __init__(self, encoder_params, estimator_params, explainer_params):
         super(Reqo, self).__init__()
-        self.node_feature_dim = encoder_params["encoder_node_type_embedding_dim"] + 2 + encoder_params["encoder_table_num"] + encoder_params["encoder_table_num"] * encoder_params["encoder_column_embedding_dim"]
+        self.node_feature_dim = encoder_params["encoder_node_type_embedding_dim"] + 2 + encoder_params[
+            "encoder_table_num"] + encoder_params["encoder_table_num"] * encoder_params["encoder_column_embedding_dim"]
         self.embedding_dim = encoder_params["encoder_gnn_embedding_dim"]
         self.feature_encoder = Feature_encoder(encoder_params)
         self.bigg = BiGG(encoder_params, self.node_feature_dim)
         self.estimator = Estimator(estimator_params, self.embedding_dim)
-        self.explainer = Explainer(explainer_params, self.embedding_dim*2)
-
+        self.explainer = Explainer(explainer_params, self.embedding_dim * 2)
 
     def forward(self, batch, table_columns_number, subtree_index, subtree_labels):
         encoded_tree = self.feature_encoder(batch.x.float(), table_columns_number)
-        global_output, local_output, global_labels, local_labels = self.bigg(encoded_tree, batch.edge_index, batch.y.long(), subtree_index, subtree_labels)
+        global_output, local_output, global_labels, local_labels = self.bigg(encoded_tree, batch.edge_index,
+                                                                             batch.y.long(), subtree_index,
+                                                                             subtree_labels)
         pred, va, iv = self.estimator(global_output)
         expl = self.explainer(local_output)
         return pred, va, iv, expl, global_labels, local_labels

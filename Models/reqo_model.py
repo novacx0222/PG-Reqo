@@ -2,7 +2,9 @@ import torch
 from torch.nn import Linear, ModuleList, MaxPool2d, Dropout, Softplus, Sequential, Sigmoid
 from torch_geometric.nn import TransformerConv, BatchNorm, GRUAggregation
 from .DirGNNConv import DirGNNConv
+
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
 
 class Feature_encoder(torch.nn.Module):
     def __init__(self, encoder_params):
@@ -36,8 +38,9 @@ class Feature_encoder(torch.nn.Module):
         node_table_enc = torch.cat(pooled, dim=1)
 
         # Concatenate all features
-        encoded_node_features = torch.cat([node_type_enc,node_stats_enc,  node_table_used, node_table_enc], dim=1)
+        encoded_node_features = torch.cat([node_type_enc, node_stats_enc, node_table_used, node_table_enc], dim=1)
         return encoded_node_features
+
 
 class BiGG(torch.nn.Module):
     def __init__(self, encoder_params, node_feature_dim):
@@ -72,6 +75,7 @@ class BiGG(torch.nn.Module):
         x = self.aggr_layer(x, batch_index)
         return x
 
+
 class Estimator(torch.nn.Module):
     def __init__(self, estimator_params, embedding_dim):
         super(Estimator, self).__init__()
@@ -97,11 +101,11 @@ class Estimator(torch.nn.Module):
         self.fcn_layers_for_v_activation = Softplus()
         self.fs = Sequential(Linear(2, 8), Linear(8, 1))
         # self.fs = Sequential(Linear(2+estimation_embedding_dim, 16), Linear(16, 8), Linear(8, 1))
-        
+
         self.dropout = Dropout(p=self.fcn_dropout_rate)
 
     def forward(self, x):
-        for i in range(self.n_fcn_layers-1):
+        for i in range(self.n_fcn_layers - 1):
             x = self.dropout(torch.relu(self.fcn_layers[i](x)))
         x = torch.relu(self.fcn_layers[-1](x))
 
@@ -121,10 +125,12 @@ class Estimator(torch.nn.Module):
 
         return x_e, x_v, x_iv
 
+
 class Reqo(torch.nn.Module):
     def __init__(self, encoder_params, estimator_params):
         super(Reqo, self).__init__()
-        self.node_feature_dim = encoder_params["encoder_node_type_embedding_dim"] + 2 + encoder_params["encoder_table_num"] + encoder_params["encoder_table_num"] * encoder_params["encoder_column_embedding_dim"]
+        self.node_feature_dim = encoder_params["encoder_node_type_embedding_dim"] + 2 + encoder_params[
+            "encoder_table_num"] + encoder_params["encoder_table_num"] * encoder_params["encoder_column_embedding_dim"]
         self.embedding_dim = encoder_params["encoder_gnn_embedding_dim"]
         self.feature_encoder = Feature_encoder(encoder_params)
         self.bigg = BiGG(encoder_params, self.node_feature_dim)
@@ -135,4 +141,3 @@ class Reqo(torch.nn.Module):
         rep = self.bigg(encoded_tree, batch.edge_index, batch.batch)
         pred, va, iv = self.estimator(rep)
         return pred, va, iv
-

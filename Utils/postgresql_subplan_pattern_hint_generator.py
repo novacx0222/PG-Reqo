@@ -9,6 +9,7 @@ from gensim.models import Word2Vec
 from tqdm import tqdm
 import postgresql_workload_generator
 
+
 def load_database_info(dbname):
     file_path = f'Data/{dbname}/database_statistics/'
     tables_index = np.load(file_path + "tables_index.npy", allow_pickle=True).item()
@@ -18,6 +19,7 @@ def load_database_info(dbname):
     attribute_range = np.load(file_path + "attribute_range.npy", allow_pickle=True).item()
     nodes = np.load(file_path + "postgresql_nodestypes_all.npy", allow_pickle=True).item()
     return tables_index, tables_index_all, columns_index, columns_list, attribute_range, nodes
+
 
 def replace_aliases_and_columns(original_plan, columns_list):
     # Alias to full table name mapping
@@ -96,11 +98,13 @@ def replace_aliases_and_columns(original_plan, columns_list):
     new_plan = apply_aliases(original_plan)
     return new_plan
 
+
 def replace_aliases_and_columns_in_query_paln(data, columns_list):
     data_replaced = []
     for query_plan in data:
         data_replaced.append(replace_aliases_and_columns(query_plan, columns_list))
     return replace_aliases_and_columns(data, columns_list)
+
 
 def extract_predicates(text):
     predicate_patterns = [
@@ -121,6 +125,7 @@ def extract_predicates(text):
 
     return predicates
 
+
 def clean_value(value):
     value = value.strip("',\")")
     if value.startswith('{') and value.endswith('}'):
@@ -128,12 +133,14 @@ def clean_value(value):
     value = re.sub(r'::.*', '', value)
     return value
 
+
 def is_float_num(value):
     try:
         float(value)
         return True
     except ValueError:
         return False
+
 
 def str_value_encoding(values, model_path):
     model = Word2Vec.load(model_path)
@@ -151,9 +158,10 @@ def str_value_encoding(values, model_path):
         encoded_value = -2
     return encoded_value
 
+
 def Text_extraction(text, tables_index, tables_index_all, columns_index, attribute_range, node_type):
     if node_type != 'Bitmap Index Scan':
-        enc_table = [0]*len(tables_index)
+        enc_table = [0] * len(tables_index)
         words = re.findall(r'\b\w+\b', text)
         for item in words:
             if item in tables_index_all:
@@ -166,6 +174,7 @@ def Text_extraction(text, tables_index, tables_index_all, columns_index, attribu
             if item in tables_index_all:
                 enc_table.append(tables_index_all[item])
         return [enc_table[0]]
+
 
 def Node_info_extract(node, tables_index, tables_index_all, columns_index, attribute_range, nodes):
     nodetype_enc = nodes[node['Node Type']]
@@ -310,15 +319,17 @@ def Node_info_extract(node, tables_index, tables_index_all, columns_index, attri
     else:
         print('Unknown Node Type:', node['Node Type'])
 
-    filter_enc = Text_extraction(info, tables_index, tables_index_all, columns_index, attribute_range, node['Node Type'])
+    filter_enc = Text_extraction(info, tables_index, tables_index_all, columns_index, attribute_range,
+                                 node['Node Type'])
 
     return nodetype_enc, filter_enc
+
 
 def Subtree_traversal(tree, L, index):
     node_index = index
     if 'Plans' in tree:
         for i in range(len(tree['Plans'])):
-            L, index = Subtree_traversal(tree['Plans'][i], L, index+1)
+            L, index = Subtree_traversal(tree['Plans'][i], L, index + 1)
     if 'Plans' in tree and len(tree['Plans']) >= 2:
         L.append(tree)
         if node_index == 0:
@@ -337,6 +348,7 @@ def Subtree_traversal(tree, L, index):
                 return [tree]
     return L, index
 
+
 def Data_augmentation(data):
     data_plus = []
     for tree in data:
@@ -344,6 +356,7 @@ def Data_augmentation(data):
         if L != []:
             data_plus = data_plus + L
     return data_plus
+
 
 def get_plan_stats(data):
     costs = []
@@ -372,6 +385,7 @@ def get_plan_stats(data):
 
     return [["Total Cost", "Plan Rows"], [costs_min, rows_min], [costs_max, rows_max]]
 
+
 def Join_only_tree(tree, join_tree):
     if 'Plans' in tree:
         child_num = len(tree['Plans'])
@@ -379,9 +393,9 @@ def Join_only_tree(tree, join_tree):
             if tree['Node Type'] in ["Hash Join", "Nested Loop", "Merge Join"]:
                 join_tree = Join_only_tree(tree['Plans'][0], join_tree)
                 if join_tree != {}:
-                    join_tree = {'joins':[join_tree], 'label':tree["Actual Total Time"] * 1}
+                    join_tree = {'joins': [join_tree], 'label': tree["Actual Total Time"] * 1}
                 else:
-                    join_tree = {'label':tree["Actual Total Time"] * 1}
+                    join_tree = {'label': tree["Actual Total Time"] * 1}
             else:
                 join_tree = Join_only_tree(tree['Plans'][0], join_tree)
         else:
@@ -399,30 +413,42 @@ def Join_only_tree(tree, join_tree):
         join_tree = {'label': tree["Actual Total Time"] * 1}
     return join_tree
 
+
 def Join_p_c_pair(join_tree, index, post_t_index, post_t_index_dic, L_pair_index, L_pair_label):
     node_index = index
     if 'joins' in join_tree:
         if len(join_tree['joins']) == 1:
-            L_pair_index.append([node_index, index+1])
-            if (join_tree['label']-join_tree['joins'][0]['label']) < 0:
-                L_pair_label.append(abs(join_tree['label']-join_tree['joins'][0]['label']))
+            L_pair_index.append([node_index, index + 1])
+            if (join_tree['label'] - join_tree['joins'][0]['label']) < 0:
+                L_pair_label.append(abs(join_tree['label'] - join_tree['joins'][0]['label']))
                 # print('error! join_tree label is smaller than its child!')
                 # print(str(node_index) + ' ' + str(join_tree))
             else:
-                L_pair_label.append(join_tree['label']-join_tree['joins'][0]['label'])
-            index, post_t_index, post_t_index_dic, L_pair_index, L_pair_label = Join_p_c_pair(join_tree['joins'][0], index+1, post_t_index, post_t_index_dic, L_pair_index, L_pair_label)
+                L_pair_label.append(join_tree['label'] - join_tree['joins'][0]['label'])
+            index, post_t_index, post_t_index_dic, L_pair_index, L_pair_label = Join_p_c_pair(join_tree['joins'][0],
+                                                                                              index + 1, post_t_index,
+                                                                                              post_t_index_dic,
+                                                                                              L_pair_index,
+                                                                                              L_pair_label)
         else:
             multi_child_node_index = []
             for i in range(len(join_tree['joins'])):
-                multi_child_node_index.append(index+1)
-                index, post_t_index, post_t_index_dic, L_pair_index, L_pair_label = Join_p_c_pair(join_tree['joins'][i], index+1, post_t_index, post_t_index_dic, L_pair_index, L_pair_label)
+                multi_child_node_index.append(index + 1)
+                index, post_t_index, post_t_index_dic, L_pair_index, L_pair_label = Join_p_c_pair(join_tree['joins'][i],
+                                                                                                  index + 1,
+                                                                                                  post_t_index,
+                                                                                                  post_t_index_dic,
+                                                                                                  L_pair_index,
+                                                                                                  L_pair_label)
             L_pair_index.append([node_index, multi_child_node_index])
-            if (join_tree['label']-sum([join_tree['joins'][i]['label'] for i in range(len(join_tree['joins']))])) < 0:
-                L_pair_label.append(abs(join_tree['label']-sum([join_tree['joins'][i]['label'] for i in range(len(join_tree['joins']))])))
+            if (join_tree['label'] - sum([join_tree['joins'][i]['label'] for i in range(len(join_tree['joins']))])) < 0:
+                L_pair_label.append(abs(
+                    join_tree['label'] - sum([join_tree['joins'][i]['label'] for i in range(len(join_tree['joins']))])))
                 # print('error! join_tree label is smaller than its multi child!')
                 # print(str(node_index) + ' ' + str(join_tree))
             else:
-                L_pair_label.append(join_tree['label']-sum([join_tree['joins'][i]['label'] for i in range(len(join_tree['joins']))]))
+                L_pair_label.append(
+                    join_tree['label'] - sum([join_tree['joins'][i]['label'] for i in range(len(join_tree['joins']))]))
     else:
         L_pair_index.append([node_index, node_index])
         L_pair_label.append(join_tree['label'])
@@ -438,6 +464,7 @@ def Join_p_c_pair(join_tree, index, post_t_index, post_t_index_dic, L_pair_index
                 L_pair_index_post.append([post_t_index_dic[i[0]], [post_t_index_dic[j] for j in i[1]]])
         return L_pair_index_post, L_pair_label
     return index, post_t_index, post_t_index_dic, L_pair_index, L_pair_label
+
 
 def join_tree_correct(tree, L_label):
     if 'joins' in tree:
@@ -458,11 +485,13 @@ def join_tree_correct(tree, L_label):
                 if tree['label'] < sum([tree['joins'][i]['label'] for i in range(len(tree['joins']))]):
                     tree['label'] = sum([subtree[i]['label'] for i in range(len(subtree))]) + tree['label']
                 else:
-                    tree['label'] = sum([subtree[i]['label'] for i in range(len(subtree))]) + tree['label'] - sum([tree['joins'][i]['label'] for i in range(len(tree['joins']))])
+                    tree['label'] = sum([subtree[i]['label'] for i in range(len(subtree))]) + tree['label'] - sum(
+                        [tree['joins'][i]['label'] for i in range(len(tree['joins']))])
             for i in range(len(tree['joins'])):
                 tree['joins'][i] = subtree[i]
     L_label.append(tree['label'])
     return tree, L_label
+
 
 def get_join_tree_label(tree, L_label):
     if 'joins' in tree:
@@ -474,6 +503,7 @@ def get_join_tree_label(tree, L_label):
     L_label.append(tree['label'])
     return L_label
 
+
 def join_explanation_generate(tree):
     join_tree = Join_only_tree(tree, {})
     if join_tree == {}:
@@ -482,6 +512,7 @@ def join_explanation_generate(tree):
     join_tree, L_label = join_tree_correct(join_tree, [])
     L_pair_index, L_pair_label = Join_p_c_pair(join_tree, 0, 0, {}, [], [])
     return L_pair_index, L_pair_label, L_label
+
 
 def filter_SPPHints(hints, max_hints_num, max_relations, mode):
     """
@@ -537,7 +568,6 @@ def filter_SPPHints(hints, max_hints_num, max_relations, mode):
         return "", 0
     # Limit the number of hints to max_hints_num.
     filtered = filtered[:max_hints_num]
-
 
     # Format the output as a multi-line string with proper indentation.
     hints_str = "\n".join(filtered)
@@ -731,6 +761,7 @@ def analyze_collect_operations(new_collect_operations, f_min, f_max, cnt_min, ra
     sorted_items = sorted(analyzed_dict.items(), key=lambda item: item[1][ranking], reverse=True)
     return dict(sorted_items)
 
+
 def update_collect_operations(collect_operations):
     new_dict = {}
     for key, value_list in collect_operations.items():
@@ -752,7 +783,9 @@ def update_collect_operations(collect_operations):
         new_dict[key] = new_value
     return new_dict
 
-def collect_operation_and_relations(subtrees, L_expl, L_pair_index, collect_operations, tables_index, tables_index_all, columns_index, attribute_range, nodes):
+
+def collect_operation_and_relations(subtrees, L_expl, L_pair_index, collect_operations, tables_index, tables_index_all,
+                                    columns_index, attribute_range, nodes):
     assert len(subtrees) == len(L_pair_index)
     unexecuted_operations = []
     used_tables = [[] for _ in range(len(subtrees))]
@@ -770,10 +803,12 @@ def collect_operation_and_relations(subtrees, L_expl, L_pair_index, collect_oper
                 if 'Plans' in subtree:
                     subtree = subtree['Plans'][0]
                 else:
-                    print(f"Error: Join node not found in subtree:{subtree}, left:{left}, right:{right}, node:{subtree['Node Type']}")
+                    print(
+                        f"Error: Join node not found in subtree:{subtree}, left:{left}, right:{right}, node:{subtree['Node Type']}")
                     sys.exit()
                     break
-            operation, _ = Node_info_extract(subtree, tables_index, tables_index_all, columns_index, attribute_range, nodes)
+            operation, _ = Node_info_extract(subtree, tables_index, tables_index_all, columns_index, attribute_range,
+                                             nodes)
             relation = []
             child_cost = 0
             for child_i in right:
@@ -791,14 +826,16 @@ def collect_operation_and_relations(subtrees, L_expl, L_pair_index, collect_oper
         else:
             if left == right:  # leaf nodes
                 if 'Scan' in subtree['Node Type'] and left not in unexecuted_operations:
-                    operation, relation = Node_info_extract(subtree, tables_index, tables_index_all, columns_index, attribute_range, nodes)
+                    operation, relation = Node_info_extract(subtree, tables_index, tables_index_all, columns_index,
+                                                            attribute_range, nodes)
                     if L_expl[subtree_i] <= 0:
                         unexecuted_operations.append(subtree_i)
                         continue
                     assert relation != []
                     # print(relation)
                     if len(relation) != 1:
-                        print('Error: Scan leaf node has more than one relations in subtree:{subtree}, left:{left}, right:{right}, node:{subtree["Node Type"]}')
+                        print(
+                            'Error: Scan leaf node has more than one relations in subtree:{subtree}, left:{left}, right:{right}, node:{subtree["Node Type"]}')
                         sys.exit()
                     used_tables[subtree_i] = relation
                     relation = tuple(relation)
@@ -810,14 +847,17 @@ def collect_operation_and_relations(subtrees, L_expl, L_pair_index, collect_oper
                 elif left in unexecuted_operations:
                     continue
                 else:
-                    print(f"Error: Scan not in leaf node in subtree:{subtree}, left:{left}, right:{right}, node:{subtree['Node Type']}")
+                    print(
+                        f"Error: Scan not in leaf node in subtree:{subtree}, left:{left}, right:{right}, node:{subtree['Node Type']}")
                     break
 
             else:
-                print(f"Error: Parent node only has one child in subtree:{subtree}, left:{left}, right:{right}, node:{subtree['Node Type']}")
+                print(
+                    f"Error: Parent node only has one child in subtree:{subtree}, left:{left}, right:{right}, node:{subtree['Node Type']}")
                 sys.exit()
         # print(collect_operations)
     return collect_operations
+
 
 def executa_query_with_SPPHints(queries, SPPHints, db_params):
     """
@@ -835,6 +875,7 @@ def executa_query_with_SPPHints(queries, SPPHints, db_params):
     # connection.execute(sql_command)
     return executed_query_plans_with_SPPHints, executed_query_plans_with_SPPHints_total_actual_time
 
+
 def Text_extraction(text, tables_index, tables_index_all):
     enc_table = [0] * len(tables_index)
     words = re.findall(r'\b\w+\b', text)
@@ -844,11 +885,13 @@ def Text_extraction(text, tables_index, tables_index_all):
             enc_table[tables_index_all[item]] = 1
     return enc_table
 
+
 def relation_extraction(text, tables_index, tables_index_all):
     relation_relation_enc = []
     for text_i in range(len(text)):
         relation_relation_enc.append(Text_extraction(text[text_i], tables_index, tables_index_all))
     return relation_relation_enc
+
 
 def extract_hints_for_query(queries, SPPHints, tables_index, tables_index_all):
     new_queries = []
@@ -883,7 +926,9 @@ def extract_hints_for_query(queries, SPPHints, tables_index, tables_index_all):
         new_queries.append(new_query)
     return new_queries
 
-def generate_subplan_pattern_hint(query_plans, explanation_results, dbname, f_min=0.5, f_max=0.5, cnt_min=10, ranking=4, max_hints_num=9999, max_relations=5, mode="all"):
+
+def generate_subplan_pattern_hint(query_plans, explanation_results, dbname, f_min=0.5, f_max=0.5, cnt_min=10, ranking=4,
+                                  max_hints_num=9999, max_relations=5, mode="all"):
     tables_index, tables_index_all, columns_index, columns_list, attribute_range, nodes = load_database_info(dbname)
 
     collect_operations = {}
@@ -896,7 +941,9 @@ def generate_subplan_pattern_hint(query_plans, explanation_results, dbname, f_mi
             subtrees = Data_augmentation([tree])
             L_pair_index, L_pair_label, _ = join_explanation_generate(tree)
             L_expl = explanation_results
-            collect_operations = collect_operation_and_relations(subtrees, L_expl, L_pair_index, collect_operations, tables_index, tables_index_all, columns_index, attribute_range, nodes)
+            collect_operations = collect_operation_and_relations(subtrees, L_expl, L_pair_index, collect_operations,
+                                                                 tables_index, tables_index_all, columns_index,
+                                                                 attribute_range, nodes)
 
     new_collect_operations = update_collect_operations(collect_operations)
     print(f"Number of collect operations: {len(collect_operations)}")
@@ -922,15 +969,19 @@ def generate_subplan_pattern_hint(query_plans, explanation_results, dbname, f_mi
     print(f"Number of filtered pg hints: {filtered_hint_num}")
 
     hints_save_path = f'../Results/{dbname}/hints/SPPHInts/f_min_{f_min}_f_max_{f_max}_cnt_min_{cnt_min}_ranking_{ranking}_max_hints_num_{max_hints_num}_max_relations_{max_relations}'
-    os.makedirs(hints_save_path , exist_ok=True)
-    with open(f'{hints_save_path}/SPPHints_mode_{mode}_{filtered_hint_num}_f_min_{f_min}_f_max_{f_max}_cnt_min_{cnt_min}_ranking_{ranking}_max_hints_num_{max_hints_num}_max_relations_{max_relations}.txt', 'w') as f:
+    os.makedirs(hints_save_path, exist_ok=True)
+    with open(
+            f'{hints_save_path}/SPPHints_mode_{mode}_{filtered_hint_num}_f_min_{f_min}_f_max_{f_max}_cnt_min_{cnt_min}_ranking_{ranking}_max_hints_num_{max_hints_num}_max_relations_{max_relations}.txt',
+            'w') as f:
         f.write(filtered_SPPHints)
+
 
 def execute_query_with_SPPHints(queries, SPPHints, db_params):
     """
     Execute a query with the provided SPPHints.
     """
-    tables_index, tables_index_all, columns_index, columns_list, attribute_range, nodes = load_database_info(db_params["dbname"])
+    tables_index, tables_index_all, columns_index, columns_list, attribute_range, nodes = load_database_info(
+        db_params["dbname"])
     queries = extract_hints_for_query(queries, SPPHints, tables_index, tables_index_all)
     executed_query_plans_with_SPPHints = []
     executed_query_plans_with_SPPHints_total_actual_time = []
@@ -938,15 +989,8 @@ def execute_query_with_SPPHints(queries, SPPHints, db_params):
     for query_i in range(len(queries)):
         query = queries[query_i]
         print(f'Executing query {query_i} with SPPHints')
-        executed_result = postgresql_workload_generator.execute_query_with_hint(db_params, "LOAD 'pg_hint_plan';", query)
+        executed_result = postgresql_workload_generator.execute_query_with_hint(db_params, "LOAD 'pg_hint_plan';",
+                                                                                query)
         executed_query_plans_with_SPPHints.append(executed_result)
         executed_query_plans_with_SPPHints_total_actual_time.append(executed_result['Actual Total Time'])
     return executed_query_plans_with_SPPHints, executed_query_plans_with_SPPHints_total_actual_time
-
-
-
-
-
-
-
-

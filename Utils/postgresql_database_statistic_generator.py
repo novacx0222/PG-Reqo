@@ -6,12 +6,14 @@ import numpy as np
 import psycopg2
 from gensim.models import Word2Vec
 
+
 def is_float_num(v):
     try:
         float(v)
         return True
     except Exception:
         return False
+
 
 def to_float_maybe(x):
     """Return float value or None for non-convertible inputs."""
@@ -26,6 +28,7 @@ def to_float_maybe(x):
         except Exception:
             return None
     return None
+
 
 def to_datetime_maybe(x):
     """Return datetime or None from date/datetime/str."""
@@ -49,12 +52,15 @@ def to_datetime_maybe(x):
                 pass
     return None
 
+
 def postgresql_nodes_types():
-    nodes = ['Seq Scan', 'Index Scan', 'Bitmap Index Scan', 'Bitmap Heap Scan', 'Index Only Scan', 'CTE Scan', 'Subquery Scan',
+    nodes = ['Seq Scan', 'Index Scan', 'Bitmap Index Scan', 'Bitmap Heap Scan', 'Index Only Scan', 'CTE Scan',
+             'Subquery Scan',
              'Hash', 'Hash Join', 'Merge Join', 'Nested Loop',
              'Sort', 'Incremental Sort', 'Aggregate', 'WindowAgg', 'Gather Merge', 'Gather', 'Group',
              'Unique', 'Memoize', 'Materialize', 'SetOp', 'Append', 'Merge Append', 'Result', 'Limit']
     return {node: index for index, node in enumerate(nodes)}
+
 
 def postgresql_database_statistic_generator(db_params):
     # Get attributes of each table
@@ -163,8 +169,10 @@ def postgresql_database_statistic_generator(db_params):
     np.save(os.path.join(save_path, "columns_list"), list(set(columns_list)))
     np.save(os.path.join(save_path, "postgresql_nodestypes_all"), postgresql_nodes_types())
 
+
 def generate_postgresql_database_statistic(db_params):
     postgresql_database_statistic_generator(db_params)
+
 
 if __name__ == '__main__':
     db_params = {
@@ -176,5 +184,3 @@ if __name__ == '__main__':
         # "options": "-c statement_timeout=600000"
     }
     generate_postgresql_database_statistic(db_params)
-
-

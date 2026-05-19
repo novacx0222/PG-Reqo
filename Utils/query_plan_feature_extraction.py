@@ -14,8 +14,10 @@ from torch_geometric.loader import DataLoader
 from concurrent.futures import ProcessPoolExecutor
 from itertools import repeat
 from functools import lru_cache
+
 os.environ.setdefault("OMP_NUM_THREADS", "1")
 os.environ.setdefault("MKL_NUM_THREADS", "1")
+
 
 def load_database_info(dbname):
     file_path = f'../Data/{dbname}/database_statistics/'
@@ -27,8 +29,10 @@ def load_database_info(dbname):
     nodes = np.load(file_path + "postgresql_nodestypes_all.npy", allow_pickle=True).item()
     return tables_index, tables_index_all, columns_index, columns_list, attribute_range, nodes
 
+
 def replace_aliases_and_columns(original_plan, columns_list):
     alias_map = {}
+
     def collect_aliases(node):
         if "Relation Name" in node and "Alias" in node:
             alias_map[node["Alias"]] = node["Relation Name"]
@@ -70,6 +74,7 @@ def replace_aliases_and_columns(original_plan, columns_list):
                             if not (before.endswith('.') or re.match(r'\\.\\s*\\w+', after)):
                                 return f"{table_name}.{column_name}"
                         return column_name
+
                     new_value = columns_pattern.sub(replace_columns, value)
                     if new_value != value:
                         node[key] = new_value
@@ -78,11 +83,13 @@ def replace_aliases_and_columns(original_plan, columns_list):
     new_plan = apply_aliases(original_plan)
     return new_plan
 
+
 def replace_aliases_and_columns_in_query_paln(data, columns_list):
     data_replaced = []
     for query_plan in data:
         data_replaced.append(replace_aliases_and_columns(query_plan, columns_list))
     return replace_aliases_and_columns(data, columns_list)
+
 
 def extract_predicates(text):
     predicate_patterns = [
@@ -102,12 +109,14 @@ def extract_predicates(text):
                     print("Unexpected match format:", match)
     return predicates
 
+
 def clean_value(value):
     value = value.strip("',\")")
     if value.startswith('{') and value.endswith('}'):
         return '{' + re.sub(r"['\"]", "", value[1:-1]) + '}'
     value = re.sub(r'::.*', '', value)
     return value
+
 
 def is_float_num(value):
     try:
@@ -116,9 +125,11 @@ def is_float_num(value):
     except ValueError:
         return False
 
+
 @lru_cache(maxsize=32)
 def _load_w2v_cached(model_path):
     return Word2Vec.load(model_path)
+
 
 def str_value_encoding(values, model_path):
     model = _load_w2v_cached(model_path)
@@ -136,26 +147,28 @@ def str_value_encoding(values, model_path):
         encoded_value = -2
     return encoded_value
 
+
 def str_to_unit_float(s: str) -> float:
     digest = hashlib.blake2b(s.encode('utf-8'), digest_size=8).digest()
     n = int.from_bytes(digest, 'big')
     return n / (1 << 64)
 
+
 def Text_extraction(text, tables_index, tables_index_all, columns_index, attribute_range):
-    enc_column = [0]*(int(len(columns_index)*8))
+    enc_column = [0] * (int(len(columns_index) * 8))
     enc_table = [0] * len(tables_index)
     predicates = extract_predicates(text)
 
     for p in predicates:
         if p[0] in columns_index:
             if p[2] in columns_index:
-                enc_column[columns_index[p[0]]*8] = 1
-                enc_column[columns_index[p[2]]*8] = 1
+                enc_column[columns_index[p[0]] * 8] = 1
+                enc_column[columns_index[p[2]] * 8] = 1
                 operators = ['join', '=', '<', '<=', '>', '>=', '<>', 'in']
                 if p[1] != '=':
                     op_i = operators.index(p[1])
-                    enc_column[columns_index[p[0]]*8 + op_i] = 1
-                    enc_column[columns_index[p[2]]*8 + op_i] = 1
+                    enc_column[columns_index[p[0]] * 8 + op_i] = 1
+                    enc_column[columns_index[p[2]] * 8 + op_i] = 1
             else:
                 v = attribute_range[p[0]]
                 if len(v) == 3:
@@ -190,8 +203,8 @@ def Text_extraction(text, tables_index, tables_index_all, columns_index, attribu
                             else:
                                 num += 1 + (p_v - v[0]) / r
                                 in_num += 1
-                        enc_column[columns_index[p[0]]*8 + 1] = num/in_num
-                        enc_column[columns_index[p[0]]*8 + 7] = 1 + in_num * v[2]
+                        enc_column[columns_index[p[0]] * 8 + 1] = num / in_num
+                        enc_column[columns_index[p[0]] * 8 + 7] = 1 + in_num * v[2]
                         continue
 
                     if p[1] == '<':
@@ -201,7 +214,7 @@ def Text_extraction(text, tables_index, tables_index_all, columns_index, attribu
                             num = 2
                         else:
                             num = 1 + (p_v - v[0]) / r
-                        enc_column[columns_index[p[0]]*8 + 2] = num
+                        enc_column[columns_index[p[0]] * 8 + 2] = num
                     elif p[1] == '<=':
                         if p_v < v[0]:
                             num = -1
@@ -209,7 +222,7 @@ def Text_extraction(text, tables_index, tables_index_all, columns_index, attribu
                             num = 2
                         else:
                             num = 1 + (p_v - v[0]) / r
-                        enc_column[columns_index[p[0]]*8 + 3] = num
+                        enc_column[columns_index[p[0]] * 8 + 3] = num
                     elif p[1] == '>':
                         if p_v >= v[1]:
                             num = -1
@@ -217,7 +230,7 @@ def Text_extraction(text, tables_index, tables_index_all, columns_index, attribu
                             num = 2
                         else:
                             num = 2 - (p_v - v[0]) / r
-                        enc_column[columns_index[p[0]]*8 + 4] = num
+                        enc_column[columns_index[p[0]] * 8 + 4] = num
                     elif p[1] == '>=':
                         if p_v > v[1]:
                             num = -1
@@ -225,19 +238,19 @@ def Text_extraction(text, tables_index, tables_index_all, columns_index, attribu
                             num = 2
                         else:
                             num = 2 - (p_v - v[0]) / r
-                        enc_column[columns_index[p[0]]*8 + 5] = num
+                        enc_column[columns_index[p[0]] * 8 + 5] = num
                     elif p[1] == '=':
                         if p_v < v[0] or p_v > v[1]:
                             num = -1
                         else:
                             num = 1 + (p_v - v[0]) / r
-                        enc_column[columns_index[p[0]]*8 + 1] = num
+                        enc_column[columns_index[p[0]] * 8 + 1] = num
                     elif p[1] == '<>':
                         if p_v < v[0] or p_v > v[1]:
                             num = 2
                         else:
                             num = 1 + (p_v - v[0]) / r
-                        enc_column[columns_index[p[0]]*8 + 6] = num
+                        enc_column[columns_index[p[0]] * 8 + 6] = num
                 else:
                     operators = ['join', '=', '>', '<', '~~', '!~~', '<>', 'in']
                     if p[2] == 'ANY':
@@ -258,8 +271,8 @@ def Text_extraction(text, tables_index, tables_index_all, columns_index, attribu
                             else:
                                 num += str_vec
                                 in_num += 1
-                        enc_column[columns_index[p[0]]*8 + 1] = num/in_num
-                        enc_column[columns_index[p[0]]*8 + 7] = 1 + in_num * v[1]
+                        enc_column[columns_index[p[0]] * 8 + 1] = num / in_num
+                        enc_column[columns_index[p[0]] * 8 + 7] = 1 + in_num * v[1]
                     else:
                         p_v = ' '.join(p[2:]).split('::')[0][1:-1].split('%')
                         while '' in p_v:
@@ -269,7 +282,7 @@ def Text_extraction(text, tables_index, tables_index_all, columns_index, attribu
                         else:
                             str_vec = str_to_unit_float(' '.join(p_v))
                         op_i = operators.index(p[1])
-                        enc_column[columns_index[p[0]]*8 + op_i] = str_vec
+                        enc_column[columns_index[p[0]] * 8 + op_i] = str_vec
         else:
             continue
 
@@ -279,6 +292,7 @@ def Text_extraction(text, tables_index, tables_index_all, columns_index, attribu
             enc_table[tables_index_all[item]] = 1
 
     return enc_table + enc_column
+
 
 def Node_info_extract(node, tables_index, tables_index_all, columns_index, attribute_range, nodes, query_plans_stats):
     nodetype_enc = [0] * len(nodes)
@@ -429,17 +443,21 @@ def Node_info_extract(node, tables_index, tables_index_all, columns_index, attri
     else:
         print('Unknown Node Type:', node['Node Type'])
 
-    stats_enc = [(np.log(node["Total Cost"] + 1) - query_plans_stats[1][0])/(query_plans_stats[2][0] - query_plans_stats[1][0]), (np.log(node["Plan Rows"] + 1) - query_plans_stats[1][1])/(query_plans_stats[2][1] - query_plans_stats[1][1])]
+    stats_enc = [(np.log(node["Total Cost"] + 1) - query_plans_stats[1][0]) / (
+                query_plans_stats[2][0] - query_plans_stats[1][0]),
+                 (np.log(node["Plan Rows"] + 1) - query_plans_stats[1][1]) / (
+                             query_plans_stats[2][1] - query_plans_stats[1][1])]
 
     filter_enc = Text_extraction(info, tables_index, tables_index_all, columns_index, attribute_range)
 
     return nodetype_enc + stats_enc + filter_enc
 
+
 def Subtree_traversal(tree, L, index):
     node_index = index
     if 'Plans' in tree:
         for i in range(len(tree['Plans'])):
-            L, index = Subtree_traversal(tree['Plans'][i], L, index+1)
+            L, index = Subtree_traversal(tree['Plans'][i], L, index + 1)
     if 'Plans' in tree and len(tree['Plans']) >= 2:
         L.append(tree)
         if node_index == 0:
@@ -453,6 +471,7 @@ def Subtree_traversal(tree, L, index):
                 return [tree]
     return L, index
 
+
 def Data_augmentation(data):
     data_plus = []
     for tree in data:
@@ -460,6 +479,7 @@ def Data_augmentation(data):
         if L != []:
             data_plus = data_plus + L
     return data_plus
+
 
 def get_plan_stats(data):
     costs = []
@@ -488,6 +508,7 @@ def get_plan_stats(data):
 
     return [["Total Cost", "Plan Rows"], [costs_min, rows_min], [costs_max, rows_max]]
 
+
 def Join_only_tree(tree, join_tree):
     if 'Plans' in tree:
         child_num = len(tree['Plans'])
@@ -495,9 +516,9 @@ def Join_only_tree(tree, join_tree):
             if tree['Node Type'] in ["Hash Join", "Nested Loop", "Merge Join"]:
                 join_tree = Join_only_tree(tree['Plans'][0], join_tree)
                 if join_tree != {}:
-                    join_tree = {'joins':[join_tree], 'label':tree["Actual Total Time"] * 1}
+                    join_tree = {'joins': [join_tree], 'label': tree["Actual Total Time"] * 1}
                 else:
-                    join_tree = {'label':tree["Actual Total Time"] * 1}
+                    join_tree = {'label': tree["Actual Total Time"] * 1}
             else:
                 join_tree = Join_only_tree(tree['Plans'][0], join_tree)
         else:
@@ -512,30 +533,42 @@ def Join_only_tree(tree, join_tree):
                 join_tree = {'label': tree["Actual Total Time"] * 1}
     return join_tree
 
+
 def Join_p_c_pair(join_tree, index, post_t_index, post_t_index_dic, L_pair_index, L_pair_label):
     node_index = index
     if 'joins' in join_tree:
         if len(join_tree['joins']) == 1:
-            L_pair_index.append([node_index, index+1])
-            if (join_tree['label']-join_tree['joins'][0]['label']) < 0:
-                L_pair_label.append(abs(join_tree['label']-join_tree['joins'][0]['label']))
+            L_pair_index.append([node_index, index + 1])
+            if (join_tree['label'] - join_tree['joins'][0]['label']) < 0:
+                L_pair_label.append(abs(join_tree['label'] - join_tree['joins'][0]['label']))
                 # print('error! join_tree label is smaller than its child!')
                 # print(str(node_index) + ' ' + str(join_tree))
             else:
-                L_pair_label.append(join_tree['label']-join_tree['joins'][0]['label'])
-            index, post_t_index, post_t_index_dic, L_pair_index, L_pair_label = Join_p_c_pair(join_tree['joins'][0], index+1, post_t_index, post_t_index_dic, L_pair_index, L_pair_label)
+                L_pair_label.append(join_tree['label'] - join_tree['joins'][0]['label'])
+            index, post_t_index, post_t_index_dic, L_pair_index, L_pair_label = Join_p_c_pair(join_tree['joins'][0],
+                                                                                              index + 1, post_t_index,
+                                                                                              post_t_index_dic,
+                                                                                              L_pair_index,
+                                                                                              L_pair_label)
         else:
             multi_child_node_index = []
             for i in range(len(join_tree['joins'])):
-                multi_child_node_index.append(index+1)
-                index, post_t_index, post_t_index_dic, L_pair_index, L_pair_label = Join_p_c_pair(join_tree['joins'][i], index+1, post_t_index, post_t_index_dic, L_pair_index, L_pair_label)
+                multi_child_node_index.append(index + 1)
+                index, post_t_index, post_t_index_dic, L_pair_index, L_pair_label = Join_p_c_pair(join_tree['joins'][i],
+                                                                                                  index + 1,
+                                                                                                  post_t_index,
+                                                                                                  post_t_index_dic,
+                                                                                                  L_pair_index,
+                                                                                                  L_pair_label)
             L_pair_index.append([node_index, multi_child_node_index])
-            if (join_tree['label']-sum([join_tree['joins'][i]['label'] for i in range(len(join_tree['joins']))])) < 0:
-                L_pair_label.append(abs(join_tree['label']-sum([join_tree['joins'][i]['label'] for i in range(len(join_tree['joins']))])))
+            if (join_tree['label'] - sum([join_tree['joins'][i]['label'] for i in range(len(join_tree['joins']))])) < 0:
+                L_pair_label.append(abs(
+                    join_tree['label'] - sum([join_tree['joins'][i]['label'] for i in range(len(join_tree['joins']))])))
                 # print('error! join_tree label is smaller than its multi child!')
                 # print(str(node_index) + ' ' + str(join_tree))
             else:
-                L_pair_label.append(join_tree['label']-sum([join_tree['joins'][i]['label'] for i in range(len(join_tree['joins']))]))
+                L_pair_label.append(
+                    join_tree['label'] - sum([join_tree['joins'][i]['label'] for i in range(len(join_tree['joins']))]))
     else:
         L_pair_index.append([node_index, node_index])
         L_pair_label.append(join_tree['label'])
@@ -551,6 +584,7 @@ def Join_p_c_pair(join_tree, index, post_t_index, post_t_index_dic, L_pair_index
                 L_pair_index_post.append([post_t_index_dic[i[0]], [post_t_index_dic[j] for j in i[1]]])
         return L_pair_index_post, L_pair_label
     return index, post_t_index, post_t_index_dic, L_pair_index, L_pair_label
+
 
 def join_tree_correct(tree, L_label):
     if 'joins' in tree:
@@ -571,11 +605,13 @@ def join_tree_correct(tree, L_label):
                 if tree['label'] < sum([tree['joins'][i]['label'] for i in range(len(tree['joins']))]):
                     tree['label'] = sum([subtree[i]['label'] for i in range(len(subtree))]) + tree['label']
                 else:
-                    tree['label'] = sum([subtree[i]['label'] for i in range(len(subtree))]) + tree['label'] - sum([tree['joins'][i]['label'] for i in range(len(tree['joins']))])
+                    tree['label'] = sum([subtree[i]['label'] for i in range(len(subtree))]) + tree['label'] - sum(
+                        [tree['joins'][i]['label'] for i in range(len(tree['joins']))])
             for i in range(len(tree['joins'])):
                 tree['joins'][i] = subtree[i]
     L_label.append(tree['label'])
     return tree, L_label
+
 
 def get_join_tree_label(tree, L_label):
     if 'joins' in tree:
@@ -587,6 +623,7 @@ def get_join_tree_label(tree, L_label):
     L_label.append(tree['label'])
     return L_label
 
+
 def join_explanation_generate(tree):
     join_tree = Join_only_tree(tree, {})
     if join_tree == {}:
@@ -596,20 +633,28 @@ def join_explanation_generate(tree):
     L_pair_index, L_pair_label = Join_p_c_pair(join_tree, 0, 0, {}, [], [])
     return L_pair_index, L_pair_label, L_label
 
-def encoding_generate(tree, index, post_t_index, post_t_index_dic, L_n, L_e, tables_index, tables_index_all, columns_index, attribute_range, nodes, query_plans_stats):
+
+def encoding_generate(tree, index, post_t_index, post_t_index_dic, L_n, L_e, tables_index, tables_index_all,
+                      columns_index, attribute_range, nodes, query_plans_stats):
     node_index = index
     if 'Plans' in tree:
         for i in range(len(tree['Plans'])):
             # Add edges in directed graph format; use current_index for clearer reference
             L_e.append([index + 1, node_index])
-            index, L_n, L_e, post_t_index, post_t_index_dic = encoding_generate(tree['Plans'][i], index + 1, post_t_index, post_t_index_dic, L_n, L_e, tables_index, tables_index_all, columns_index, attribute_range, nodes, query_plans_stats)
+            index, L_n, L_e, post_t_index, post_t_index_dic = encoding_generate(tree['Plans'][i], index + 1,
+                                                                                post_t_index, post_t_index_dic, L_n,
+                                                                                L_e, tables_index, tables_index_all,
+                                                                                columns_index, attribute_range, nodes,
+                                                                                query_plans_stats)
     # After all children are processed, record the post-traversal index of this node
     post_t_index_dic[node_index] = post_t_index
     post_t_index += 1
     # Extract and append node features to L_n
-    node_feature = Node_info_extract(tree, tables_index, tables_index_all, columns_index, attribute_range, nodes, query_plans_stats)
+    node_feature = Node_info_extract(tree, tables_index, tables_index_all, columns_index, attribute_range, nodes,
+                                     query_plans_stats)
     L_n.append(node_feature)
     return index, L_n, L_e, post_t_index, post_t_index_dic
+
 
 # ---- workers (top-level for pickling) ----
 def _worker_generate_dataset(args):
@@ -620,7 +665,9 @@ def _worker_generate_dataset(args):
     for j in range(len(plans_i)):
         tree = replace_aliases_and_columns(plans_i[j], columns_list)
         __, node_feature, edge_index, __, post_t_index_dic = encoding_generate(tree, 0, 0, {}, [], [],
-                                                                               tables_index, tables_index_all, columns_index, attribute_range, nodes, query_plans_stats)
+                                                                               tables_index, tables_index_all,
+                                                                               columns_index, attribute_range, nodes,
+                                                                               query_plans_stats)
         edge_index = [[post_t_index_dic[e[0]], post_t_index_dic[e[1]]] for e in edge_index]
         if len(node_feature) < 2 or len(edge_index) < 1:
             print(f"Error in query plan {j}: too few nodes or edges")
@@ -630,6 +677,7 @@ def _worker_generate_dataset(args):
         query_plans_postgres_cost_new_i.append(tree["Total Cost"])
     keep = len(query_plans_index_new_i) >= 2
     return keep, q_index_i, dataset_i, query_plans_index_new_i, query_plans_postgres_cost_new_i
+
 
 def _worker_generate_dataset_with_explanation(args):
     plans_i, plans_index_i, q_index_i, columns_list, tables_index, tables_index_all, columns_index, attribute_range, nodes, query_plans_stats = args
@@ -654,12 +702,15 @@ def _worker_generate_dataset_with_explanation(args):
         processed_subtrees = []
         for subtree in subtrees:
             __, node_feature, edge_index, __, post_t_index_dic = encoding_generate(subtree, 0, 0, {}, [], [],
-                                                                                   tables_index, tables_index_all, columns_index, attribute_range, nodes, query_plans_stats)
+                                                                                   tables_index, tables_index_all,
+                                                                                   columns_index, attribute_range,
+                                                                                   nodes, query_plans_stats)
             edge_index = [[post_t_index_dic[e[0]], post_t_index_dic[e[1]]] for e in edge_index]
             if len(node_feature) < 2 or len(edge_index) < 1:
                 print(f"Error in query plan {j}: too few nodes or edges")
                 continue
-            processed_subtrees.append(Data(x=torch.FloatTensor(node_feature), edge_index=torch.LongTensor(edge_index).t()))
+            processed_subtrees.append(
+                Data(x=torch.FloatTensor(node_feature), edge_index=torch.LongTensor(edge_index).t()))
             query_plans_subtree_postgres_cost_new_i.append(subtree["Total Cost"])
 
         subtreeset_loader = DataLoader(dataset=processed_subtrees, batch_size=subtrees_num, shuffle=False)
@@ -681,6 +732,7 @@ def _worker_generate_dataset_with_explanation(args):
             query_plans_postgres_cost_new_i, query_plans_subtree_postgres_cost_new_i,
             dataset_labels_i, dataset_subtree_labels_i, dataset_join_pair_index_for_explain_i,
             dataset_join_pair_label_for_explain_i, sample_index_i)
+
 
 def generate_dataset(dbname):
     # Load database statistics
@@ -713,7 +765,8 @@ def generate_dataset(dbname):
                     repeat(columns_list), repeat(tables_index), repeat(tables_index_all),
                     repeat(columns_index), repeat(attribute_range), repeat(nodes), repeat(query_plans_stats))
     with ProcessPoolExecutor(max_workers=os.cpu_count() or 1) as ex:
-        for keep, q_idx, dataset_i, qp_idx_i, qp_cost_i in tqdm(ex.map(_worker_generate_dataset, args_iter, chunksize=4), total=len(query_plans)):
+        for keep, q_idx, dataset_i, qp_idx_i, qp_cost_i in tqdm(
+                ex.map(_worker_generate_dataset, args_iter, chunksize=4), total=len(query_plans)):
             if keep:
                 dataset.extend(dataset_i)
                 query_index_new.append(q_idx)
@@ -726,9 +779,13 @@ def generate_dataset(dbname):
     os.makedirs(dataset_path_base, exist_ok=True)
     np.save(f'{dataset_path_base}postgresql_{dbname}_executed_query_plans_dataset.npy', np.array(dataset, dtype=object))
     np.save(f'{dataset_path_base}postgresql_{dbname}_executed_query_index.npy', np.array(query_index_new, dtype=object))
-    np.save(f'{dataset_path_base}postgresql_{dbname}_executed_query_plans_index.npy', np.array(query_plans_index_new, dtype=object))
-    np.save(f'{dataset_path_base}postgresql_{dbname}_executed_query_plans_index_num.npy', np.array(query_plans_index_num_new, dtype=object))
-    np.save(f'{dataset_path_base}postgresql_{dbname}_executed_query_plans_postgres_cost.npy', np.array(query_plans_postgres_cost_new, dtype=object))
+    np.save(f'{dataset_path_base}postgresql_{dbname}_executed_query_plans_index.npy',
+            np.array(query_plans_index_new, dtype=object))
+    np.save(f'{dataset_path_base}postgresql_{dbname}_executed_query_plans_index_num.npy',
+            np.array(query_plans_index_num_new, dtype=object))
+    np.save(f'{dataset_path_base}postgresql_{dbname}_executed_query_plans_postgres_cost.npy',
+            np.array(query_plans_postgres_cost_new, dtype=object))
+
 
 def generate_dataset_with_explanation(dbname):
     # Load database statistics
@@ -769,7 +826,8 @@ def generate_dataset_with_explanation(dbname):
                     repeat(columns_list), repeat(tables_index), repeat(tables_index_all),
                     repeat(columns_index), repeat(attribute_range), repeat(nodes), repeat(query_plans_stats))
     with ProcessPoolExecutor(max_workers=os.cpu_count() or 1) as ex:
-        results = list(tqdm(ex.map(_worker_generate_dataset_with_explanation, args_iter, chunksize=4), total=len(query_plans)))
+        results = list(
+            tqdm(ex.map(_worker_generate_dataset_with_explanation, args_iter, chunksize=4), total=len(query_plans)))
 
     for (keep, q_idx_i, dataset_i, dataset_sample_index_i, qp_idx_i,
          qp_cost_i, qp_subtree_cost_i, labels_i, subtree_labels_i,
@@ -797,23 +855,35 @@ def generate_dataset_with_explanation(dbname):
 
     dataset_path_base = f'../Data/{dbname}/datasets/'
     os.makedirs(dataset_path_base, exist_ok=True)
-    np.save(f'{dataset_path_base}postgresql_{dbname}_executed_query_plans_dataset_with_explanation.npy', np.array(dataset, dtype=object))
-    np.save(f'{dataset_path_base}postgresql_{dbname}_executed_query_index_with_explanation.npy', np.array(query_index_new, dtype=object))
-    np.save(f'{dataset_path_base}postgresql_{dbname}_executed_query_plans_index_with_explanation.npy', np.array(query_plans_index_new, dtype=object))
-    np.save(f'{dataset_path_base}postgresql_{dbname}_executed_query_plans_postgres_cost_with_explanation.npy', np.array(query_plans_postgres_cost_new, dtype=object))
-    np.save(f'{dataset_path_base}postgresql_{dbname}_executed_query_plans_subtree_postgres_cost_with_explanation.npy', np.array(query_plans_subtree_postgres_cost_new, dtype=object))
-    np.save(f'{dataset_path_base}postgresql_{dbname}_executed_query_plans_labels_with_explanation.npy', np.array(dataset_labels, dtype=object))
-    np.save(f'{dataset_path_base}postgresql_{dbname}_executed_query_plans_sample_index_with_explanation.npy', np.array(dataset_sample_index, dtype=object))
-    np.save(f'{dataset_path_base}postgresql_{dbname}_executed_query_plans_subtree_labels_with_explanation.npy', np.array(dataset_subtree_labels, dtype=object))
-    np.save(f'{dataset_path_base}postgresql_{dbname}_executed_query_plans_join_pair_index_for_explain_with_explanation.npy', np.array(dataset_join_pair_index_for_explain, dtype=object))
-    np.save(f'{dataset_path_base}postgresql_{dbname}_executed_query_plans_join_pair_label_for_explain_with_explanation.npy', np.array(dataset_join_pair_label_for_explain, dtype=object))
-    np.save(f'{dataset_path_base}postgresql_{dbname}_executed_query_plans_index_num_with_explanation.npy', np.array(query_plans_index_num_new, dtype=object))
-    np.save(f'{dataset_path_base}postgresql_{dbname}_executed_query_plans_subtrees_num_with_explanation.npy', np.array(query_plans_subtrees_num, dtype=object))
+    np.save(f'{dataset_path_base}postgresql_{dbname}_executed_query_plans_dataset_with_explanation.npy',
+            np.array(dataset, dtype=object))
+    np.save(f'{dataset_path_base}postgresql_{dbname}_executed_query_index_with_explanation.npy',
+            np.array(query_index_new, dtype=object))
+    np.save(f'{dataset_path_base}postgresql_{dbname}_executed_query_plans_index_with_explanation.npy',
+            np.array(query_plans_index_new, dtype=object))
+    np.save(f'{dataset_path_base}postgresql_{dbname}_executed_query_plans_postgres_cost_with_explanation.npy',
+            np.array(query_plans_postgres_cost_new, dtype=object))
+    np.save(f'{dataset_path_base}postgresql_{dbname}_executed_query_plans_subtree_postgres_cost_with_explanation.npy',
+            np.array(query_plans_subtree_postgres_cost_new, dtype=object))
+    np.save(f'{dataset_path_base}postgresql_{dbname}_executed_query_plans_labels_with_explanation.npy',
+            np.array(dataset_labels, dtype=object))
+    np.save(f'{dataset_path_base}postgresql_{dbname}_executed_query_plans_sample_index_with_explanation.npy',
+            np.array(dataset_sample_index, dtype=object))
+    np.save(f'{dataset_path_base}postgresql_{dbname}_executed_query_plans_subtree_labels_with_explanation.npy',
+            np.array(dataset_subtree_labels, dtype=object))
+    np.save(
+        f'{dataset_path_base}postgresql_{dbname}_executed_query_plans_join_pair_index_for_explain_with_explanation.npy',
+        np.array(dataset_join_pair_index_for_explain, dtype=object))
+    np.save(
+        f'{dataset_path_base}postgresql_{dbname}_executed_query_plans_join_pair_label_for_explain_with_explanation.npy',
+        np.array(dataset_join_pair_label_for_explain, dtype=object))
+    np.save(f'{dataset_path_base}postgresql_{dbname}_executed_query_plans_index_num_with_explanation.npy',
+            np.array(query_plans_index_num_new, dtype=object))
+    np.save(f'{dataset_path_base}postgresql_{dbname}_executed_query_plans_subtrees_num_with_explanation.npy',
+            np.array(query_plans_subtrees_num, dtype=object))
+
 
 if __name__ == '__main__':
     dbname = 'stats'
     generate_dataset(dbname)
     # generate_dataset_with_explanation(dbname)
-
-
-

@@ -2,8 +2,10 @@ import os
 import numpy as np
 from matplotlib import pyplot as plt
 from numpy import mean, median
-os.environ["KMP_DUPLICATE_LIB_OK"]="TRUE"
+
+os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 from scipy.stats import spearmanr
+
 
 def get_qerror_and_spearman(outputs, targets, max_label, min_label):
     outputs = np.exp(outputs * (max_label - min_label) + min_label) - 1
@@ -17,18 +19,19 @@ def get_qerror_and_spearman(outputs, targets, max_label, min_label):
     percentile_values = np.percentile(qerror, percentiles)
 
     cost_estimation_results = [
-        np.round(np.mean(qerror[:int(0.5 * num_plans)]), 3), # Top 50% mean q-error
-        np.round(np.mean(qerror[:int(0.9 * num_plans)]), 3), # Top 90% mean q-error
-        np.round(np.mean(qerror[:int(0.99 * num_plans)]), 3), # Top 99% mean q-error
-        np.round(np.mean(qerror), 3), # Mean q-error
+        np.round(np.mean(qerror[:int(0.5 * num_plans)]), 3),  # Top 50% mean q-error
+        np.round(np.mean(qerror[:int(0.9 * num_plans)]), 3),  # Top 90% mean q-error
+        np.round(np.mean(qerror[:int(0.99 * num_plans)]), 3),  # Top 99% mean q-error
+        np.round(np.mean(qerror), 3),  # Mean q-error
         np.round(percentile_values[0], 3),  # 50th percentile q-error
         np.round(percentile_values[1], 3),  # 90th percentile q-error
         np.round(percentile_values[2], 3),  # 99th percentile q-error
         np.round(qerror[-1], 3),  # Max q-error
-        np.round(spearman_corr, 3) # Spearman correlation
+        np.round(spearman_corr, 3)  # Spearman correlation
     ]
 
     return cost_estimation_results
+
 
 def get_plansubop_and_runtime(outputs, targets, query_postgres_cost, query_plans_index_num):
     query_num = len(query_plans_index_num)
@@ -73,19 +76,22 @@ def get_plansubop_and_runtime(outputs, targets, query_postgres_cost, query_plans
 
     plan_subop.sort()
     robustness_results = [
-        round(np.mean(plan_subop[:int(0.5 * len(plan_subop))]), 3), # Top 50% mean plan suboptimality
-        round(np.mean(plan_subop[:int(0.90 * len(plan_subop))]), 3), # Top 90% mean plan suboptimality
-        round(np.mean(plan_subop[:int(0.99 * len(plan_subop))]), 3), # Top 99% mean plan suboptimality
-        round(np.mean(plan_subop), 3), # Mean plan suboptimality
-        round(np.median(plan_subop), 3), # 50th percentile plan suboptimality
-        round(plan_subop[int(0.90 * len(plan_subop))], 3), # 90th percentile plan suboptimality
-        round(plan_subop[int(0.99 * len(plan_subop))], 3), # 99th percentile plan suboptimality
-        round(np.max(plan_subop), 3), # Max plan suboptimality
-        round(imp_runtime_num / len(query_plans_index_num), 3), # Improved runtime percentage compared to Postgres
-        round(reg_runtime_num / len(query_plans_index_num), 3), # Regressed runtime percentage compared to Postgres
-        round(total_model_select_runtime / total_postgres_select_runtime, 3), # Total model select runtime / total postgres select runtime
-        round(total_model_select_runtime / total_optimal_runtime, 3), # Total model select runtime / total optimal runtime
-        round(total_postgres_select_runtime / total_optimal_runtime, 3) # Total postgres select runtime / total optimal runtime
+        round(np.mean(plan_subop[:int(0.5 * len(plan_subop))]), 3),  # Top 50% mean plan suboptimality
+        round(np.mean(plan_subop[:int(0.90 * len(plan_subop))]), 3),  # Top 90% mean plan suboptimality
+        round(np.mean(plan_subop[:int(0.99 * len(plan_subop))]), 3),  # Top 99% mean plan suboptimality
+        round(np.mean(plan_subop), 3),  # Mean plan suboptimality
+        round(np.median(plan_subop), 3),  # 50th percentile plan suboptimality
+        round(plan_subop[int(0.90 * len(plan_subop))], 3),  # 90th percentile plan suboptimality
+        round(plan_subop[int(0.99 * len(plan_subop))], 3),  # 99th percentile plan suboptimality
+        round(np.max(plan_subop), 3),  # Max plan suboptimality
+        round(imp_runtime_num / len(query_plans_index_num), 3),  # Improved runtime percentage compared to Postgres
+        round(reg_runtime_num / len(query_plans_index_num), 3),  # Regressed runtime percentage compared to Postgres
+        round(total_model_select_runtime / total_postgres_select_runtime, 3),
+        # Total model select runtime / total postgres select runtime
+        round(total_model_select_runtime / total_optimal_runtime, 3),
+        # Total model select runtime / total optimal runtime
+        round(total_postgres_select_runtime / total_optimal_runtime, 3)
+        # Total postgres select runtime / total optimal runtime
     ]
 
     return robustness_results, [postgres_select_runtime, model_select_runtime, optimal_runtime]
@@ -136,6 +142,7 @@ def write_results_to_file(results, expl_or_not=False, filename='results.txt'):
             file.write(f"Top1 Subinfluence Ratio: {expl_metrics[3]}\n")
             file.write(f"Top1and2 Subinfluence Ratio: {expl_metrics[4]}\n")
 
+
 def plot_runtimes(postgres_runtimes, reqo_runtimes, optimal_runtimes, save_path='runtime_performance.png'):
     # Prepare the cumulative sums for each runtime list
     postgres_cumulative = np.cumsum(postgres_runtimes) / 1000
@@ -161,6 +168,7 @@ def plot_runtimes(postgres_runtimes, reqo_runtimes, optimal_runtimes, save_path=
     plt.savefig(save_path)
     plt.show()
 
+
 def get_explanation_results(pred_expl, expl_labels, testset_index, subtree_labels_load, subtree_join_pair_index):
     join_num = 0
     top1_acc, top1and2_acc, top1or2_acc = 0, 0, 0
@@ -175,14 +183,14 @@ def get_explanation_results(pred_expl, expl_labels, testset_index, subtree_label
         pred_scores, label_scores = [], []
 
         for left, right in join_pairs:
-            if isinstance(right, list): # nodes with more than one child
+            if isinstance(right, list):  # nodes with more than one child
                 right_sum_pred = sum(pred_expl_s[j] for j in right)
                 right_sum_label = sum(label_expl_s[j] for j in right)
             else:
-                if left == right: # leaf nodes
+                if left == right:  # leaf nodes
                     right_sum_pred = 0
                     right_sum_label = 0
-                else: # nodes with only one child
+                else:  # nodes with only one child
                     right_sum_pred = pred_expl_s[right]
                     right_sum_label = label_expl_s[right]
 
@@ -198,7 +206,8 @@ def get_explanation_results(pred_expl, expl_labels, testset_index, subtree_label
 
         # Check top1 and top1&2 accuracy
         top1_match = pred_sort_idx[-1] == label_sort_idx[-1]
-        top1and2_match = (len(pred_sort_idx) > 1 and top1_match and pred_sort_idx[-2] == label_sort_idx[-2]) or (len(pred_sort_idx) == 1 and top1_match)
+        top1and2_match = (len(pred_sort_idx) > 1 and top1_match and pred_sort_idx[-2] == label_sort_idx[-2]) or (
+                    len(pred_sort_idx) == 1 and top1_match)
 
         if top1_match:
             top1_acc += 1
@@ -212,7 +221,7 @@ def get_explanation_results(pred_expl, expl_labels, testset_index, subtree_label
 
         if len(pred_sort_idx) > 1:
             top1and2_subinfl_ratio += (label_scores[pred_sort_idx[-1]] + label_scores[pred_sort_idx[-2]]) / \
-                                   (label_scores[label_sort_idx[-1]] + label_scores[label_sort_idx[-2]])
+                                      (label_scores[label_sort_idx[-1]] + label_scores[label_sort_idx[-2]])
         else:
             top1and2_subinfl_ratio += label_scores[pred_sort_idx[-1]] / label_scores[label_sort_idx[-1]]
 
@@ -220,14 +229,19 @@ def get_explanation_results(pred_expl, expl_labels, testset_index, subtree_label
 
     num_samples = len(testset_index)
     return [
-        round(top1_acc / num_samples, 3), # Model accuracy in identifying the Top1 most influential subgraph.
-        round(top1and2_acc / num_samples, 3), # Model accuracy in identifying the Top1 and 2 most influential subgraphs.
-        round(top1or2_acc / num_samples, 3), # Model accuracy in identifying the Top1 or 2 most influential subgraphs.
-        round(top1_subinfl_ratio / num_samples, 3), # The ratio of model selected Top 1 influenced subgrah's latency to the actual Top 1 influenced subgraph's latency.
-        round(top1and2_subinfl_ratio / num_samples, 3) # The ratio of model selected Top 1 and 2 influenced subgraphs' latency to the actual Top 1 and 2 influenced subgraphs' latency.
+        round(top1_acc / num_samples, 3),  # Model accuracy in identifying the Top1 most influential subgraph.
+        round(top1and2_acc / num_samples, 3),
+        # Model accuracy in identifying the Top1 and 2 most influential subgraphs.
+        round(top1or2_acc / num_samples, 3),  # Model accuracy in identifying the Top1 or 2 most influential subgraphs.
+        round(top1_subinfl_ratio / num_samples, 3),
+        # The ratio of model selected Top 1 influenced subgrah's latency to the actual Top 1 influenced subgraph's latency.
+        round(top1and2_subinfl_ratio / num_samples, 3)
+        # The ratio of model selected Top 1 and 2 influenced subgraphs' latency to the actual Top 1 and 2 influenced subgraphs' latency.
     ]
 
-def plot_explanation(model_results, postgres_cost, total_plan_num, subtree_labels_load, subtree_join_pair_index, save_path):
+
+def plot_explanation(model_results, postgres_cost, total_plan_num, subtree_labels_load, subtree_join_pair_index,
+                     save_path):
     dataset_index = list(range(total_plan_num))
     expl_labels = np.concatenate(subtree_labels_load)
     postgres_explanation_results = get_explanation_results(postgres_cost, expl_labels, dataset_index,
@@ -239,7 +253,7 @@ def plot_explanation(model_results, postgres_cost, total_plan_num, subtree_label
     x = np.arange(len(metrics))
     width = 0.35
 
-    fig, ax = plt.subplots(figsize=(16,12))
+    fig, ax = plt.subplots(figsize=(16, 12))
     rects1 = ax.bar(x - width / 2, postgres_explanation_results, width, label='PostgreSQL')
     rects2 = ax.bar(x + width / 2, model_explanation_results, width, label='Reqo')
 
@@ -264,4 +278,3 @@ def plot_explanation(model_results, postgres_cost, total_plan_num, subtree_label
     plt.tight_layout()
     plt.savefig(save_path)
     plt.show()
-

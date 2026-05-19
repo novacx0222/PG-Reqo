@@ -16,17 +16,20 @@ hints_off = ['set enable_nestloop = off;',
              'set enable_mergejoin = off; set enable_hashjoin = off;',
              'set enable_mergejoin = off; set enable_hashjoin = off; set enable_indexscan = off;']
 
+
 def load_query_for_analyze(path_name):
     with open(path_name, "r") as f:
         # Strip newline characters and skip empty lines directly in the comprehension
         queries = [f"explain (ANALYZE true, FORMAT JSON) {line.strip()}" for line in f if line.strip()]
     return queries
 
+
 def load_query_for_explain(path_name):
     with open(path_name, "r") as f:
         # Strip newline characters and skip empty lines directly in the comprehension
         queries = [f"explain (ANALYZE false, FORMAT JSON) {line.strip()}" for line in f if line.strip()]
     return queries
+
 
 def execute_query(db_params, q):
     try:
@@ -39,6 +42,7 @@ def execute_query(db_params, q):
         sys.exit()
     return result
 
+
 def execute_query_with_hint(db_params, h, q):
     try:
         with psycopg2.connect(**db_params) as conn:
@@ -50,6 +54,7 @@ def execute_query_with_hint(db_params, h, q):
         print(f"An error occurred while executing the query: {e}")
         sys.exit()
     return result
+
 
 def generate_postgresql_workload_with_hints(db_params, query_file_path):
     queries = load_query_for_analyze(query_file_path)
@@ -102,6 +107,7 @@ def generate_postgresql_workload_with_hints(db_params, query_file_path):
     print(f'A total of {total_query_plans_executed} query plans were executed')
     print(f'A total of {total_timeouts} query plans timed out')
 
+
 def generate_postgresql_workload(db_params, query_file_path):
     queries = load_query_for_analyze(query_file_path)
     total_queries_executed = 0
@@ -131,4 +137,3 @@ def generate_postgresql_workload(db_params, query_file_path):
 
     print(f'A total of {total_queries_executed} queries were executed')
     print(f'A total of {total_timeouts} query plans timed out')
-
