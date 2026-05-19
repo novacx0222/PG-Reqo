@@ -1,0 +1,4 @@
+SELECT u.username, u.city, o.id AS order_id, o.status, o.total_amount, o.created_at FROM users u JOIN orders o ON u.id = o.user_id WHERE o.status = 'paid' AND u.city IN ('Shanghai', 'Suzhou') AND o.total_amount > 5000;
+SELECT u.username, u.city, o.id AS order_id, o.status, o.total_amount, o.created_at FROM users u JOIN orders o ON u.id = o.user_id WHERE o.status = 'paid' AND u.city IN ('Beijing') AND o.total_amount > 500;
+SELECT u.username, u.city, o.id AS order_id, o.status, o.total_amount, o.created_at FROM users u JOIN orders o ON u.id = o.user_id WHERE o.status = 'paid' AND u.city IN ('Chengdu', 'Guangzhou') AND o.total_amount > 5000;
+SELECT u.username, u.city, o.id AS order_id, o.status, o.total_amount, o.created_at FROM users u JOIN orders o ON u.id = o.user_id WHERE o.status = 'paid' AND u.city IN ('Guangzhou') AND o.total_amount > 500;
