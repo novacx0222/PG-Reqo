@@ -40,8 +40,12 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 import psycopg2
 import torch
+from pandas import DataFrame
+from pandas.io.parsers import TextFileReader
 from torch_geometric.data import Data
 from tqdm import tqdm
+import pandas as pd
+import os
 
 
 def parse_args() -> argparse.Namespace:
@@ -132,25 +136,11 @@ def load_database_info_from_dir(stats_dir: Path):
     return tables_index, tables_index_all, columns_index, columns_list, attribute_range, nodes
 
 
-def read_sql_lines(sql_file: Path) -> List[Tuple[int, str]]:
+def read_sql_lines(sql_file: Path) -> DataFrame:
     """
-    Read one SQL query per non-empty line.
-
-    Lines starting with -- are ignored. Inline comments are not stripped because they
-    may appear inside strings; keep your input as one complete SQL per line.
+    Read one SQL query (with its ``query_id'' and ``sql_id'') per non-empty line.
     """
-    sqls: List[Tuple[int, str]] = []
-    for line_number, raw_line in enumerate(sql_file.read_text(encoding="utf-8").splitlines(), start=1):
-        line = raw_line.strip()
-        if not line or line.startswith("--"):
-            continue
-        sql = line.rstrip().rstrip(";")
-        if sql:
-            sqls.append((line_number, sql))
-
-    if not sqls:
-        raise ValueError(f"No SQL queries found in {sql_file}. Expected one SQL per non-empty line.")
-    return sqls
+    return pd.read_csv(sql_file, usecols=["sql_id", "query_id", "sql_text"])
 
 
 def open_connection(
@@ -316,18 +306,6 @@ def encode_plan(plan: Dict[str, Any], stats_dir: Path, norm_stats: List[Any]):
     return x, edge_index, normalized_plan, metadata
 
 
-def infer_output_format(path: Path, fmt: str) -> str:
-    """Infer output format from extension."""
-    if fmt != "auto":
-        return fmt
-    suffix = path.suffix.lower()
-    if suffix == ".pt":
-        return "pt"
-    if suffix == ".json":
-        return "json"
-    return "npz"
-
-
 def save_dataset(
         path: Path,
         records: List[Dict[str, Any]],
@@ -353,7 +331,7 @@ def save_dataset(
         # Store useful metadata directly on the PyG Data object.
         data.query_id = rec["query_id"]
         data.sql_id = rec["query_id"]
-        data.line_number = rec["line_number"]
+        data.sql_id = rec["sql_id"]
         data.sql = rec["sql"]
         data.metadata = rec["metadata"]
         data.plan = rec["plan"]
@@ -394,13 +372,10 @@ def main() -> None:
     ) as conn:
         with conn.cursor() as cur:
             if args.statement_timeout_ms and args.statement_timeout_ms > 0:
-                cur.execute("SET statement_timeout = %s", (args.statement_timeout_ms,))
+                cur.execute("SET statement_timeout = %s", args.statement_timeout_ms)
 
-            for idx, (line_number, sql_text) in enumerate(
-                    tqdm(sql_rows, desc="Explaining SQLs", total=len(sql_rows)),
-                    start=1,
-            ):
-                query_id = f"{args.query_id_prefix}{idx:06d}"
+            for item in tqdm(sql_rows.iterrows(), desc="Explaining SQLs", total=len(sql_rows)):
+                query_id, sql_id, sql_text = item[1]
                 try:
                     explain_doc = run_explain_json_with_cursor(
                         cur=cur,
@@ -409,7 +384,7 @@ def main() -> None:
                     )
                     plans_by_row.append({
                         "query_id": query_id,
-                        "line_number": line_number,
+                        "sql_id": sql_id,
                         "sql": sql_text,
                         "plan": explain_doc["Plan"],
                     })
@@ -417,15 +392,15 @@ def main() -> None:
                     conn.rollback()
                     error_obj = {
                         "query_id": query_id,
-                        "line_number": line_number,
+                        "sql_id": sql_id,
                         "sql": sql_text,
                         "error": repr(exc),
                     }
                     if args.skip_errors:
                         errors.append(error_obj)
-                        print(f"\nSkipped line {line_number}: {exc}")
+                        print(f"\nSkipped line {sql_id}: {exc}")
                         continue
-                    raise RuntimeError(f"Failed on line {line_number}: {sql_text}\n{exc}") from exc
+                    raise RuntimeError(f"Failed on sql_id {sql_id}: {sql_text}\n{exc}") from exc
 
     if not plans_by_row:
         raise RuntimeError("No SQL plans were successfully collected.")
@@ -452,12 +427,12 @@ def main() -> None:
                 stats_dir=stats_dir,
                 norm_stats=norm_stats,
             )
-            metadata["line_number"] = item["line_number"]
+            metadata["sql_id"] = item["sql_id"]
             metadata["query_id"] = item["query_id"]
 
             records.append({
                 "query_id": item["query_id"],
-                "line_number": item["line_number"],
+                "sql_id": item["sql_id"],
                 "sql": item["sql"],
                 "x": x,
                 "edge_index": edge_index,
@@ -467,15 +442,15 @@ def main() -> None:
         except Exception as exc:
             error_obj = {
                 "query_id": item["query_id"],
-                "line_number": item["line_number"],
+                "sql_id": item["sql_id"],
                 "sql": item["sql"],
                 "error": repr(exc),
             }
             if args.skip_errors:
                 errors.append(error_obj)
-                print(f"\nSkipped encoding line {item['line_number']}: {exc}")
+                print(f"\nSkipped encoding line {item['sql_id']}: {exc}")
                 continue
-            raise RuntimeError(f"Failed encoding line {item['line_number']}: {item['sql']}\n{exc}") from exc
+            raise RuntimeError(f"Failed encoding line {item['sql_id']}: {item['sql']}\n{exc}") from exc
 
     if not records:
         raise RuntimeError("No SQL plans were successfully encoded.")
