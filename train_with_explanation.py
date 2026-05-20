@@ -227,11 +227,11 @@ def k_fold_train_with_explanation(dbname, reqo_config, k=10, save_model=False):
         subtree_num_load_i = subtree_num_load[sample_p_num1:sample_p_num2]
         testset_index = [i for i in range(sample_p_num1, sample_p_num2)]
 
-        results, runtime_per_query = train_with_explanation(dbname, reqo_config, k_i + 1, trainset, testset,
-                                                            save_path + 'fold_' + str(k_i + 1) + '/',
-                                                            query_plans_index_num_i, query_postgres_cost_i,
-                                                            subtree_num_load_i, testset_index, subtree_index_load,
-                                                            subtree_labels_load, subtree_join_pair_index, save_model)
+        results, runtime_per_query = train_with_explanation(
+            dbname, reqo_config, k_i + 1, trainset, testset, save_path + 'fold_' + str(k_i + 1) + '/',
+            query_plans_index_num_i, query_postgres_cost_i, subtree_num_load_i,
+            testset_index, subtree_index_load, subtree_labels_load, subtree_join_pair_index, save_model
+        )
         all_results.append(results)
         all_postgres_runtimes.extend(runtime_per_query[0])
         all_reqo_runtimes.extend(runtime_per_query[1])
