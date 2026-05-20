@@ -18,42 +18,30 @@ Important:
   which really executes every SQL line separately.
 
 Example:
-  python reqo_encode_sql_lines.py \
-    --repo-root /path/to/Reqo-on-PostgreSQL \
-    --sql-file ./queries.sql \
-    --dbname imdb \
+  python3 reqo_encode_sql_lines.py \
+    --analyze
+    --sql-file ../Test/queries/group.sql \
+    --stats-dir ../Data/postgres/database_statistics \
+    --dbname postgres \
     --host localhost \
     --port 5432 \
-    --user postgres \
-    --password 123456 \
-    --output ./encoded_queries.pt \
-    --norm-stats-output ./norm_stats.json
+    --user novacx0222 \
+    --output ../Test/encoded_train.pt \
+    --norm-stats-output ../Test/norm_stats.json
 """
 
 from __future__ import annotations
 
 import argparse
 import json
-import sys
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 import psycopg2
-
-try:
-    from tqdm import tqdm
-except Exception:
-    def tqdm(iterable: Iterable, **kwargs):  # type: ignore
-        """Small fallback when tqdm is not installed."""
-        total = kwargs.get("total", None)
-        desc = kwargs.get("desc", "")
-        for index, item in enumerate(iterable, start=1):
-            if total:
-                print(f"{desc}: {index}/{total}")
-            else:
-                print(f"{desc}: {index}")
-            yield item
+import torch
+from torch_geometric.data import Data
+from tqdm import tqdm
 
 
 def parse_args() -> argparse.Namespace:
@@ -66,32 +54,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--port", default="5432", help="PostgreSQL port.")
     parser.add_argument("--user", required=True, help="PostgreSQL username.")
     parser.add_argument("--password", default=None, help="PostgreSQL password. Optional.")
-    parser.add_argument(
-        "--repo-root",
-        default=".",
-        help=(
-            "Path to Reqo-on-PostgreSQL repo root, or directly to its Utils directory. "
-            "Default: current directory."
-        ),
-    )
+
     parser.add_argument(
         "--stats-dir",
-        default=None,
-        help=(
-            "Directory containing Reqo database_statistics/*.npy files. "
-            "Default: <repo-root>/../Data/<dbname>/database_statistics"
-        ),
+        required=True,
+        help="Directory containing Reqo database_statistics/*.npy files. ",
     )
     parser.add_argument(
         "--output",
         required=True,
-        help="Output path. Supported extensions: .pt, .npz, .json. Recommended: .pt.",
-    )
-    parser.add_argument(
-        "--output-format",
-        choices=["auto", "pt", "npz", "json"],
-        default="auto",
-        help="Output format. Default infers from --output extension.",
+        help="Output path. Format: .pt.",
     )
     parser.add_argument(
         "--norm-stats-output",
@@ -133,54 +105,6 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def add_reqo_utils_to_path(repo_root: Path) -> Path:
-    """
-    Add Reqo's Utils directory to sys.path.
-
-    The uploaded one-query version expected query_plan_feature_extraction.py directly
-    under --repo-root. This version supports both:
-      - --repo-root /path/to/Reqo-on-PostgreSQL
-      - --repo-root /path/to/Reqo-on-PostgreSQL/Utils
-    """
-    repo_root = repo_root.resolve()
-
-    candidates = [
-        repo_root / "Utils",
-        repo_root,
-    ]
-
-    for candidate in candidates:
-        if (candidate / "query_plan_feature_extraction.py").exists():
-            sys.path.insert(0, str(candidate))
-            return candidate
-
-    raise FileNotFoundError(
-        "Cannot find query_plan_feature_extraction.py. "
-        "Pass --repo-root /path/to/Reqo-on-PostgreSQL or /path/to/Reqo-on-PostgreSQL/Utils."
-    )
-
-
-def resolve_stats_dir(repo_root: Path, utils_dir: Path, dbname: str, stats_dir_arg: Optional[str]) -> Path:
-    """Resolve the database_statistics directory."""
-    if stats_dir_arg:
-        return Path(stats_dir_arg).resolve()
-
-    # If repo_root is Utils, then its parent is the repo root.
-    possible_repo_root = utils_dir.parent if utils_dir.name == "Utils" else repo_root.resolve()
-
-    candidates = [
-        possible_repo_root / ".." / "Data" / dbname / "database_statistics",
-        possible_repo_root / "Data" / dbname / "database_statistics",
-    ]
-
-    for candidate in candidates:
-        if candidate.exists():
-            return candidate.resolve()
-
-    # Return Reqo's original default even if it does not exist, so the error message is useful.
-    return candidates[0].resolve()
-
-
 def load_database_info_from_dir(stats_dir: Path):
     """Load the same metadata arrays that Reqo's load_database_info(dbname) loads."""
     required = [
@@ -196,7 +120,7 @@ def load_database_info_from_dir(stats_dir: Path):
         raise FileNotFoundError(
             f"Missing Reqo database statistics in {stats_dir}: {missing}. "
             "Generate them first with postgresql_database_statistic_generator.py "
-            "or pass --stats-dir to an existing database_statistics directory."
+            "or pass the correct --stats-dir to an existing database_statistics directory."
         )
 
     tables_index = np.load(stats_dir / "tables_index.npy", allow_pickle=True).item()
@@ -406,12 +330,11 @@ def infer_output_format(path: Path, fmt: str) -> str:
 
 def save_dataset(
         path: Path,
-        fmt: str,
         records: List[Dict[str, Any]],
         norm_stats: List[Any],
         analyze: bool,
 ) -> None:
-    """Save all encoded records in the requested format."""
+    """Save all encoded records in .pt format."""
     path.parent.mkdir(parents=True, exist_ok=True)
 
     dataset_metadata = {
@@ -420,89 +343,41 @@ def save_dataset(
         "analyze": analyze,
     }
 
-    if fmt == "pt":
-        try:
-            import torch
-            from torch_geometric.data import Data
-        except Exception as exc:
-            raise RuntimeError(
-                "Saving .pt requires torch and torch_geometric. "
-                "Use --output-format npz if you only need arrays."
-            ) from exc
-
-        data_list = []
-        for rec in records:
-            data = Data(
-                x=torch.tensor(rec["x"], dtype=torch.float32),
-                edge_index=torch.tensor(rec["edge_index"], dtype=torch.long),
-            )
-
-            # Store useful metadata directly on the PyG Data object.
-            data.query_id = rec["query_id"]
-            data.sql_id = rec["query_id"]
-            data.line_number = rec["line_number"]
-            data.sql = rec["sql"]
-            data.metadata = rec["metadata"]
-            data.plan = rec["plan"]
-
-            # If EXPLAIN ANALYZE was used, root actual runtime becomes a training label.
-            if "root_actual_total_time_ms" in rec["metadata"]:
-                data.y = torch.tensor([rec["metadata"]["root_actual_total_time_ms"]], dtype=torch.float32)
-
-            data_list.append(data)
-
-        payload = {
-            "data_list": data_list,
-            "metadata": dataset_metadata,
-        }
-        torch.save(payload, path)
-
-    elif fmt == "npz":
-        np.savez_compressed(
-            path,
-            x_list=np.asarray([rec["x"] for rec in records], dtype=object),
-            edge_index_list=np.asarray([rec["edge_index"] for rec in records], dtype=object),
-            query_ids=np.asarray([rec["query_id"] for rec in records], dtype=object),
-            line_numbers=np.asarray([rec["line_number"] for rec in records], dtype=np.int64),
-            sqls=np.asarray([rec["sql"] for rec in records], dtype=object),
-            metadata_json=json.dumps(dataset_metadata, default=str),
-            record_metadata_json=json.dumps([rec["metadata"] for rec in records], default=str),
-            plans_json=json.dumps([rec["plan"] for rec in records], default=str),
+    data_list = []
+    for rec in records:
+        data = Data(
+            x=torch.tensor(rec["x"], dtype=torch.float32),
+            edge_index=torch.tensor(rec["edge_index"], dtype=torch.long),
         )
 
-    elif fmt == "json":
-        payload = {
-            "metadata": dataset_metadata,
-            "records": [
-                {
-                    "query_id": rec["query_id"],
-                    "line_number": rec["line_number"],
-                    "sql": rec["sql"],
-                    "x": rec["x"].tolist(),
-                    "edge_index": rec["edge_index"].tolist(),
-                    "metadata": rec["metadata"],
-                    "plan": rec["plan"],
-                }
-                for rec in records
-            ],
-        }
-        path.write_text(json.dumps(payload, indent=2, default=str), encoding="utf-8")
+        # Store useful metadata directly on the PyG Data object.
+        data.query_id = rec["query_id"]
+        data.sql_id = rec["query_id"]
+        data.line_number = rec["line_number"]
+        data.sql = rec["sql"]
+        data.metadata = rec["metadata"]
+        data.plan = rec["plan"]
 
-    else:
-        raise ValueError(f"Unknown output format: {fmt}")
+        # If EXPLAIN ANALYZE was used, root actual runtime becomes a training label.
+        if "root_actual_total_time_ms" in rec["metadata"]:
+            data.y = torch.tensor([rec["metadata"]["root_actual_total_time_ms"]], dtype=torch.float32)
+
+        data_list.append(data)
+
+    payload = {
+        "data_list": data_list,
+        "metadata": dataset_metadata,
+    }
+    torch.save(payload, path)
 
 
 def main() -> None:
     args = parse_args()
 
-    repo_root = Path(args.repo_root)
-    utils_dir = add_reqo_utils_to_path(repo_root)
-    stats_dir = resolve_stats_dir(repo_root, utils_dir, args.dbname, args.stats_dir)
-
+    stats_dir = Path(args.stats_dir).resolve()
     sql_rows = read_sql_lines(Path(args.sql_file))
 
     print(f"Loaded {len(sql_rows)} SQL queries from {args.sql_file}")
-    print(f"Reqo Utils dir: {utils_dir}")
     print(f"Database statistics dir: {stats_dir}")
     print("Mode:",
           "EXPLAIN ANALYZE, every SQL will be executed" if args.analyze else "EXPLAIN only, queries are planned but not executed")
@@ -532,14 +407,12 @@ def main() -> None:
                         sql=sql_text,
                         analyze=args.analyze,
                     )
-                    plans_by_row.append(
-                        {
-                            "query_id": query_id,
-                            "line_number": line_number,
-                            "sql": sql_text,
-                            "plan": explain_doc["Plan"],
-                        }
-                    )
+                    plans_by_row.append({
+                        "query_id": query_id,
+                        "line_number": line_number,
+                        "sql": sql_text,
+                        "plan": explain_doc["Plan"],
+                    })
                 except Exception as exc:
                     conn.rollback()
                     error_obj = {
@@ -582,17 +455,15 @@ def main() -> None:
             metadata["line_number"] = item["line_number"]
             metadata["query_id"] = item["query_id"]
 
-            records.append(
-                {
-                    "query_id": item["query_id"],
-                    "line_number": item["line_number"],
-                    "sql": item["sql"],
-                    "x": x,
-                    "edge_index": edge_index,
-                    "metadata": metadata,
-                    "plan": normalized_plan,
-                }
-            )
+            records.append({
+                "query_id": item["query_id"],
+                "line_number": item["line_number"],
+                "sql": item["sql"],
+                "x": x,
+                "edge_index": edge_index,
+                "metadata": metadata,
+                "plan": normalized_plan,
+            })
         except Exception as exc:
             error_obj = {
                 "query_id": item["query_id"],
@@ -610,8 +481,7 @@ def main() -> None:
         raise RuntimeError("No SQL plans were successfully encoded.")
 
     out_path = Path(args.output)
-    fmt = infer_output_format(out_path, args.output_format)
-    save_dataset(out_path, fmt, records, norm_stats, analyze=args.analyze)
+    save_dataset(out_path, records, norm_stats, analyze=args.analyze)
 
     if errors:
         error_path = out_path.with_suffix(out_path.suffix + ".errors.json")
@@ -620,7 +490,6 @@ def main() -> None:
 
     print(f"Saved encoded dataset to: {out_path}")
     print(f"Encoded records: {len(records)}")
-    print(f"Output format: {fmt}")
 
     if not args.analyze:
         print(
