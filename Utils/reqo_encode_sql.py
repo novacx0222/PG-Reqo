@@ -26,7 +26,7 @@ Example:
     --host localhost \
     --port 5432 \
     --user novacx0222 \
-    --output ../Test/encoded_train.pt \
+    --output-dir ../Test \
     --norm-stats-output ../Test/norm_stats.json
 """
 
@@ -35,17 +35,15 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 import numpy as np
+import pandas as pd
 import psycopg2
 import torch
 from pandas import DataFrame
-from pandas.io.parsers import TextFileReader
 from torch_geometric.data import Data
 from tqdm import tqdm
-import pandas as pd
-import os
 
 
 def parse_args() -> argparse.Namespace:
@@ -65,9 +63,9 @@ def parse_args() -> argparse.Namespace:
         help="Directory containing Reqo database_statistics/*.npy files. ",
     )
     parser.add_argument(
-        "--output",
+        "--output-dir",
         required=True,
-        help="Output path. Format: .pt.",
+        help="Output path. Format: *.pt and *.npy",
     )
     parser.add_argument(
         "--norm-stats-output",
@@ -134,13 +132,6 @@ def load_database_info_from_dir(stats_dir: Path):
     attribute_range = np.load(stats_dir / "attribute_range.npy", allow_pickle=True).item()
     nodes = np.load(stats_dir / "postgresql_nodestypes_all.npy", allow_pickle=True).item()
     return tables_index, tables_index_all, columns_index, columns_list, attribute_range, nodes
-
-
-def read_sql_lines(sql_file: Path) -> DataFrame:
-    """
-    Read one SQL query (with its ``query_id'' and ``sql_id'') per non-empty line.
-    """
-    return pd.read_csv(sql_file, usecols=["sql_id", "query_id", "sql_text"])
 
 
 def open_connection(
@@ -311,8 +302,28 @@ def save_dataset(
         records: List[Dict[str, Any]],
         norm_stats: List[Any],
         analyze: bool,
+        dbname: str,
+        save_original_reqo_dataset: bool = True,
+        min_candidates_per_query: int = 3,
 ) -> None:
-    """Save all encoded records in .pt format."""
+    """
+    Save encoded records.
+
+    This function saves two formats:
+
+    1. .pt format:
+       Used by custom inference/debug scripts.
+       Contains PyG Data objects.
+
+    2. Original Reqo .npy format, optional:
+       Used directly by the author's original train.py.
+       Required files:
+         - postgresql_<dbname>_executed_query_plans_dataset.npy
+         - postgresql_<dbname>_executed_query_index.npy
+         - postgresql_<dbname>_executed_query_plans_index.npy
+         - postgresql_<dbname>_executed_query_plans_index_num.npy
+         - postgresql_<dbname>_executed_query_plans_postgres_cost.npy
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
 
     dataset_metadata = {
@@ -321,6 +332,9 @@ def save_dataset(
         "analyze": analyze,
     }
 
+    # -------------------------
+    # 1. Save .pt format
+    # -------------------------
     data_list = []
     for rec in records:
         data = Data(
@@ -330,15 +344,18 @@ def save_dataset(
 
         # Store useful metadata directly on the PyG Data object.
         data.query_id = rec["query_id"]
+        data.plan_id = rec.get("plan_id", str(rec.get("line_number", "")))
         data.sql_id = rec["query_id"]
-        data.sql_id = rec["sql_id"]
         data.sql = rec["sql"]
         data.metadata = rec["metadata"]
         data.plan = rec["plan"]
 
         # If EXPLAIN ANALYZE was used, root actual runtime becomes a training label.
         if "root_actual_total_time_ms" in rec["metadata"]:
-            data.y = torch.tensor([rec["metadata"]["root_actual_total_time_ms"]], dtype=torch.float32)
+            data.y = torch.tensor(
+                [rec["metadata"]["root_actual_total_time_ms"]],
+                dtype=torch.float32,
+            )
 
         data_list.append(data)
 
@@ -347,15 +364,161 @@ def save_dataset(
         "metadata": dataset_metadata,
     }
     torch.save(payload, path)
+    print(f"Saved .pt dataset to: {path}")
+
+    # -------------------------
+    # 2. Optionally save original Reqo .npy format
+    # -------------------------
+    if not save_original_reqo_dataset:
+        return
+
+    if not analyze:
+        raise ValueError(
+            "Original Reqo training dataset requires runtime labels. "
+            "Please run encoding with --analyze."
+        )
+
+    reqo_dataset_dir = (".." / Path("Data") / dbname / "datasets").resolve()
+    reqo_dataset_dir.mkdir(parents=True, exist_ok=True)
+
+    # Group records by query_id.
+    # Original Reqo needs query_plans_index_num to know how many candidate
+    # plans belong to each query.
+    grouped: Dict[str, List[Dict[str, Any]]] = {}
+    for rec in records:
+        grouped.setdefault(rec["query_id"], []).append(rec)
+
+    dataset_rows = []
+    query_index = []
+    query_plans_index = []
+    query_plans_index_num = []
+    query_plans_postgres_cost = []
+
+    dropped_groups = 0
+    dropped_plans = 0
+
+    for query_id in sorted(grouped.keys()):
+        group = grouped[query_id]
+
+        # For real plan selector training, this should usually be >= 2.
+        if len(group) < min_candidates_per_query:
+            dropped_groups += 1
+            dropped_plans += len(group)
+            continue
+
+        start_len = len(dataset_rows)
+        plan_ids = []
+        postgres_costs = []
+
+        for rec in group:
+            runtime = rec["metadata"].get("root_actual_total_time_ms")
+            if runtime is None:
+                dropped_plans += 1
+                continue
+
+            x = rec["x"].astype(np.float32).tolist()
+
+            # PyG edge_index is [2, E].
+            # Original Reqo train.py expects row[1] as [E, 2],
+            # because it later calls torch.LongTensor(row[1]).t().
+            edge_index = rec["edge_index"]
+            if edge_index.shape[0] == 2:
+                edge_list_e_by_2 = edge_index.T.astype(np.int64).tolist()
+            elif edge_index.shape[1] == 2:
+                edge_list_e_by_2 = edge_index.astype(np.int64).tolist()
+            else:
+                raise ValueError(
+                    f"Unexpected edge_index shape for query_id={query_id}: "
+                    f"{edge_index.shape}"
+                )
+
+            dataset_rows.append([
+                x,
+                edge_list_e_by_2,
+                float(runtime),
+            ])
+
+            plan_ids.append(rec.get("plan_id", str(rec.get("line_number", ""))))
+            postgres_costs.append(
+                float(rec["metadata"].get("postgres_total_cost", np.nan))
+            )
+
+        kept = len(dataset_rows) - start_len
+
+        if kept >= min_candidates_per_query:
+            query_index.append(query_id)
+            query_plans_index.append(plan_ids)
+            query_plans_index_num.append(kept)
+            query_plans_postgres_cost.append(postgres_costs)
+        else:
+            # Remove partially added rows for this query group.
+            dataset_rows = dataset_rows[:start_len]
+            dropped_groups += 1
+            dropped_plans += len(group)
+
+    if not dataset_rows:
+        raise RuntimeError(
+            "No rows written to original Reqo dataset. "
+            "Use --analyze and make sure each query group has enough candidate plans."
+        )
+
+    prefix = reqo_dataset_dir / f"postgresql_{dbname}_executed_query"
+
+    np.save(
+        f"{prefix}_plans_dataset.npy",
+        np.array(dataset_rows, dtype=object),
+    )
+    np.save(
+        f"{prefix}_index.npy",
+        np.array(query_index, dtype=object),
+    )
+    np.save(
+        f"{prefix}_plans_index.npy",
+        np.array(query_plans_index, dtype=object),
+    )
+    np.save(
+        f"{prefix}_plans_index_num.npy",
+        np.array(query_plans_index_num, dtype=object),
+    )
+    np.save(
+        f"{prefix}_plans_postgres_cost.npy",
+        np.array(query_plans_postgres_cost, dtype=object),
+    )
+
+    summary = {
+        "reqo_dataset_dir": str(reqo_dataset_dir.resolve()),
+        "written_plans": len(dataset_rows),
+        "written_query_groups": len(query_index),
+        "dropped_groups": dropped_groups,
+        "dropped_plans": dropped_plans,
+        "min_candidates_per_query": min_candidates_per_query,
+        "files": {
+            "plans_dataset": f"{prefix}_plans_dataset.npy",
+            "index": f"{prefix}_index.npy",
+            "plans_index": f"{prefix}_plans_index.npy",
+            "plans_index_num": f"{prefix}_plans_index_num.npy",
+            "plans_postgres_cost": f"{prefix}_plans_postgres_cost.npy",
+        },
+    }
+
+    summary_path = reqo_dataset_dir / f"postgresql_{dbname}_executed_query_conversion_summary.json"
+    summary_path.write_text(
+        json.dumps(summary, indent=4, default=str),
+        encoding="utf-8",
+    )
+
+    print("Saved original Reqo .npy dataset files:")
+    print(json.dumps(summary, indent=4, default=str))
 
 
 def main() -> None:
     args = parse_args()
 
     stats_dir = Path(args.stats_dir).resolve()
-    sql_rows = read_sql_lines(Path(args.sql_file))
+    sql_file_path = Path(args.sql_file).resolve()
+    sql_rows_df: DataFrame = pd.read_csv(sql_file_path, usecols=["sql_id", "query_id", "sql_text"])
 
-    print(f"Loaded {len(sql_rows)} SQL queries from {args.sql_file}")
+    print(f"Loaded {len(sql_rows_df)} SQL queries from {args.sql_file}")
     print(f"Database statistics dir: {stats_dir}")
     print("Mode:",
           "EXPLAIN ANALYZE, every SQL will be executed" if args.analyze else "EXPLAIN only, queries are planned but not executed")
@@ -374,7 +537,7 @@ def main() -> None:
             if args.statement_timeout_ms and args.statement_timeout_ms > 0:
                 cur.execute("SET statement_timeout = %s", args.statement_timeout_ms)
 
-            for item in tqdm(sql_rows.iterrows(), desc="Explaining SQLs", total=len(sql_rows)):
+            for item in tqdm(sql_rows_df.iterrows(), desc="Explaining SQLs", total=len(sql_rows_df)):
                 query_id, sql_id, sql_text = item[1]
                 try:
                     explain_doc = run_explain_json_with_cursor(
@@ -411,12 +574,12 @@ def main() -> None:
     else:
         norm_stats = collect_global_plan_stats([item["plan"] for item in plans_by_row])
         print("Auto-computed normalization stats from all collected plans:")
-        print(json.dumps(norm_stats_to_json(norm_stats), indent=2))
+        print(json.dumps(norm_stats_to_json(norm_stats), indent=4))
 
     if args.norm_stats_output:
         norm_stats_path = Path(args.norm_stats_output)
         norm_stats_path.parent.mkdir(parents=True, exist_ok=True)
-        norm_stats_path.write_text(json.dumps(norm_stats_to_json(norm_stats), indent=2), encoding="utf-8")
+        norm_stats_path.write_text(json.dumps(norm_stats_to_json(norm_stats), indent=4), encoding="utf-8")
         print(f"Saved normalization stats to: {norm_stats_path}")
 
     records: List[Dict[str, Any]] = []
@@ -455,12 +618,12 @@ def main() -> None:
     if not records:
         raise RuntimeError("No SQL plans were successfully encoded.")
 
-    out_path = Path(args.output)
-    save_dataset(out_path, records, norm_stats, analyze=args.analyze)
+    out_path = Path(args.output_dir) / "encode.pt"
+    save_dataset(out_path, records, norm_stats, analyze=args.analyze, dbname=args.dbname)
 
     if errors:
         error_path = out_path.with_suffix(out_path.suffix + ".errors.json")
-        error_path.write_text(json.dumps(errors, indent=2), encoding="utf-8")
+        error_path.write_text(json.dumps(errors, indent=4), encoding="utf-8")
         print(f"Saved {len(errors)} skipped errors to: {error_path}")
 
     print(f"Saved encoded dataset to: {out_path}")
