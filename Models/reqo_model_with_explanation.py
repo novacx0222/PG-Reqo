@@ -208,9 +208,9 @@ class Reqo(torch.nn.Module):
 
     def forward(self, batch, table_columns_number, subtree_index, subtree_labels):
         encoded_tree = self.feature_encoder(batch.x.float(), table_columns_number)
-        global_output, local_output, global_labels, local_labels = self.bigg(encoded_tree, batch.edge_index,
-                                                                             batch.y.long(), subtree_index,
-                                                                             subtree_labels)
+        global_output, local_output, global_labels, local_labels = self.bigg(
+            encoded_tree, batch.edge_index, batch.y.long(), subtree_index, subtree_labels
+        )
         pred, va, iv = self.estimator(global_output)
         expl = self.explainer(local_output)
         return pred, va, iv, expl, global_labels, local_labels
