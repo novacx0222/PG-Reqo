@@ -90,8 +90,9 @@ def train(dbname, reqo_config, k_i, trainset, testset, save_path, query_plans_in
                 batch = batch.to(device)
                 with torch.no_grad():
                     batch_test_pred, batch_test_va, batch_test_iv = model(batch, table_columns_number)
-                test_data_uncertainty = criteon_data_uncertainty(batch_test_pred, batch_test_va, batch.y.float(),
-                                                                 max_label_log, min_label_log)
+                test_data_uncertainty = criteon_data_uncertainty(
+                    batch_test_pred, batch_test_va, batch.y.float(), max_label_log, min_label_log
+                )
                 test_ranking_loss = criteon_ranking(batch_test_iv, batch.y.float(), max_label_log, min_label_log)
                 test_loss = test_data_uncertainty + test_ranking_loss
                 batch_graph_num = batch.num_graphs
@@ -142,7 +143,14 @@ def train(dbname, reqo_config, k_i, trainset, testset, save_path, query_plans_in
     runtime_per_query = best_runtime_per_query
 
     print(
-        f'Fold {k_i}: test results: qerror_median: {cost_estimation_results[4]} qerror_top99mean: {cost_estimation_results[2]}, spearman_correlation: {cost_estimation_results[-1]}, subop_median: {robustness_results[4]}, subop_top99mean: {robustness_results[2]}, model_to_postgresql_runtime_ratio: {robustness_results[10]}, model_to_optimal_runtime_ratio: {robustness_results[11]}')
+        f'Fold {k_i}: test results: qerror_median: {cost_estimation_results[4]}, '
+        f'qerror_top99mean: {cost_estimation_results[2]}, '
+        f'spearman_correlation: {cost_estimation_results[-1]}, '
+        f'subop_median: {robustness_results[4]}, '
+        f'subop_top99mean: {robustness_results[2]}, '
+        f'model_to_postgresql_runtime_ratio: {robustness_results[10]}, '
+        f'model_to_optimal_runtime_ratio: {robustness_results[11]}'
+    )
     os.makedirs(save_path, exist_ok=True)
     write_results_to_file(cost_estimation_results + robustness_results, expl_or_not=False,
                           filename=save_path + 'reqo_fold_' + str(k_i) + '_results.txt')
@@ -154,11 +162,15 @@ def train(dbname, reqo_config, k_i, trainset, testset, save_path, query_plans_in
 def k_fold_train(dbname, reqo_config, k=10, save_model=False):
     save_path = f'Results/{dbname}/'
     os.makedirs(save_path, exist_ok=True)
-    dataset = np.load(f'Data/{dbname}/datasets/postgresql_{dbname}_executed_query_plans_dataset.npy', allow_pickle=True)
-    query_plans_index_num = np.load(f'Data/{dbname}/datasets/postgresql_{dbname}_executed_query_plans_index_num.npy',
-                                    allow_pickle=True)
-    query_postgres_cost = np.load(f'Data/{dbname}/datasets/postgresql_{dbname}_executed_query_plans_postgres_cost.npy',
-                                  allow_pickle=True)
+    dataset = np.load(
+        f'Data/{dbname}/datasets/postgresql_{dbname}_executed_query_plans_dataset.npy', allow_pickle=True
+    )
+    query_plans_index_num = np.load(
+        f'Data/{dbname}/datasets/postgresql_{dbname}_executed_query_plans_index_num.npy', allow_pickle=True
+    )
+    query_postgres_cost = np.load(
+        f'Data/{dbname}/datasets/postgresql_{dbname}_executed_query_plans_postgres_cost.npy', allow_pickle=True
+    )
     k_sample_num = round(len(query_plans_index_num) / k)
 
     all_results = []
@@ -175,14 +187,14 @@ def k_fold_train(dbname, reqo_config, k=10, save_model=False):
         query_plans_index_num_i = query_plans_index_num[sample_q_num1:sample_q_num2]
         query_postgres_cost_i = query_postgres_cost[sample_q_num1:sample_q_num2]
 
-        results, runtime_per_query = train(dbname, reqo_config, k_i + 1, trainset, testset,
-                                           save_path + 'fold_' + str(k_i + 1) + '/', query_plans_index_num_i,
-                                           query_postgres_cost_i, save_model)
+        results, runtime_per_query = train(
+            dbname, reqo_config, k_i + 1, trainset, testset, save_path + 'fold_' + str(k_i + 1) + '/',
+            query_plans_index_num_i, query_postgres_cost_i, save_model
+        )
         all_results.append(results)
         all_postgres_runtimes.extend(runtime_per_query[0])
         all_reqo_runtimes.extend(runtime_per_query[1])
         all_optimal_runtimes.extend(runtime_per_query[2])
-
     write_results_to_file(nanmean(np.array(all_results), axis=0), expl_or_not=False,
                           filename=save_path + 'reqo_avg_results.txt')
     plot_runtimes(all_postgres_runtimes, all_reqo_runtimes, all_optimal_runtimes,
@@ -191,12 +203,21 @@ def k_fold_train(dbname, reqo_config, k=10, save_model=False):
 
 if __name__ == '__main__':
     dbname = 'stats'
-    reqo_config = {'batch_size': 256, 'learning_rate': 0.001,
-                   'encoder_attention_heads': 8, 'encoder_conv_layers': 4, 'encoder_gnn_embedding_dim': 256,
-                   'encoder_gnn_dropout_rate': 0.1, 'encoder_dirgnn_alpha': 0.3, 'encoder_node_type_embedding_dim': 16,
-                   'encoder_column_embedding_dim': 8,
-                   'explainer_fcn_layers': 4, 'explainer_explanation_embedding_dim': 512,
-                   'explainer_fcn_dropout_rate': 0.1,
-                   'estimator_fcn_layers': 4, 'estimator_estimation_embedding_dim': 512,
-                   'estimator_fcn_dropout_rate': 0.1}
+    reqo_config = {
+        'batch_size': 256,
+        'learning_rate': 0.001,
+        'encoder_attention_heads': 8,
+        'encoder_conv_layers': 4,
+        'encoder_gnn_embedding_dim': 256,
+        'encoder_gnn_dropout_rate': 0.1,
+        'encoder_dirgnn_alpha': 0.3,
+        'encoder_node_type_embedding_dim': 16,
+        'encoder_column_embedding_dim': 8,
+        'explainer_fcn_layers': 4,
+        'explainer_explanation_embedding_dim': 512,
+        'explainer_fcn_dropout_rate': 0.1,
+        'estimator_fcn_layers': 4,
+        'estimator_estimation_embedding_dim': 512,
+        'estimator_fcn_dropout_rate': 0.1
+    }
     k_fold_train(dbname, reqo_config, k=10)

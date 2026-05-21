@@ -21,7 +21,8 @@ def load_dataset(dataset, batch_size, shuffle_or_not):
     dataset_loader = DataLoader(
         dataset=data,
         batch_size=batch_size,
-        shuffle=shuffle_or_not)
+        shuffle=shuffle_or_not
+    )
     return dataset_loader
 
 
@@ -172,7 +173,17 @@ def train_with_explanation(dbname, reqo_config, k_i, trainset, testset, save_pat
     explanation_results = best_explanation_results
 
     print(
-        f'Fold {k_i}: test results: qerror_median: {cost_estimation_results[4]} qerror_top99mean: {cost_estimation_results[2]}, spearman_correlation: {cost_estimation_results[-1]}, subop_median: {robustness_results[4]}, subop_top99mean: {robustness_results[2]}, model_to_postgresql_runtime_ratio: {robustness_results[10]}, model_to_optimal_runtime_ratio: {robustness_results[11]}, Top1and2_explanation_accuracy: {explanation_results[1]}, Top1and2_explanation_subinfl: {explanation_results[4]}')
+        f'Fold {k_i}: test results:'
+        f'qerror_median: {cost_estimation_results[4]}, '
+        f'qerror_top99mean: {cost_estimation_results[2]}, '
+        f'spearman_correlation: {cost_estimation_results[-1]}, '
+        f'subop_median: {robustness_results[4]}, '
+        f'subop_top99mean: {robustness_results[2]}, '
+        f'model_to_postgresql_runtime_ratio: {robustness_results[10]}, '
+        f'model_to_optimal_runtime_ratio: {robustness_results[11]}, '
+        f'Top1and2_explanation_accuracy: {explanation_results[1]}, '
+        f'Top1and2_explanation_subinfl: {explanation_results[4]}'
+    )
     os.makedirs(save_path, exist_ok=True)
     write_results_to_file(cost_estimation_results + robustness_results + explanation_results, expl_or_not=True,
                           filename=save_path + 'reqo_with_explanation_fold_' + str(k_i) + '_results.txt')
@@ -185,8 +196,9 @@ def k_fold_train_with_explanation(dbname, reqo_config, k=10, save_model=False):
     save_path = f'Results/{dbname}/'
     os.makedirs(save_path, exist_ok=True)
     # Load data of executed query plans
-    dataset = np.load(f'Data/{dbname}/datasets/postgresql_{dbname}_executed_query_plans_dataset_with_explanation.npy',
-                      allow_pickle=True)
+    dataset = np.load(
+        f'Data/{dbname}/datasets/postgresql_{dbname}_executed_query_plans_dataset_with_explanation.npy',
+        allow_pickle=True)
     query_plans_index_num = np.load(
         f'Data/{dbname}/datasets/postgresql_{dbname}_executed_query_plans_index_num_with_explanation.npy',
         allow_pickle=True)
@@ -247,12 +259,21 @@ def k_fold_train_with_explanation(dbname, reqo_config, k=10, save_model=False):
 
 if __name__ == "__main__":
     dbname = 'stats'
-    reqo_config = {'batch_size': 256, 'learning_rate': 0.001,
-                   'encoder_attention_heads': 8, 'encoder_conv_layers': 4, 'encoder_gnn_embedding_dim': 256,
-                   'encoder_gnn_dropout_rate': 0.1, 'encoder_dirgnn_alpha': 0.3, 'encoder_node_type_embedding_dim': 16,
-                   'encoder_column_embedding_dim': 8,
-                   'explainer_fcn_layers': 4, 'explainer_explanation_embedding_dim': 512,
-                   'explainer_fcn_dropout_rate': 0.1,
-                   'estimator_fcn_layers': 4, 'estimator_estimation_embedding_dim': 512,
-                   'estimator_fcn_dropout_rate': 0.1}
+    reqo_config = {
+        'batch_size': 256,
+        'learning_rate': 0.001,
+        'encoder_attention_heads': 8,
+        'encoder_conv_layers': 4,
+        'encoder_gnn_embedding_dim': 256,
+        'encoder_gnn_dropout_rate': 0.1,
+        'encoder_dirgnn_alpha': 0.3,
+        'encoder_node_type_embedding_dim': 16,
+        'encoder_column_embedding_dim': 8,
+        'explainer_fcn_layers': 4,
+        'explainer_explanation_embedding_dim': 512,
+        'explainer_fcn_dropout_rate': 0.1,
+        'estimator_fcn_layers': 4,
+        'estimator_estimation_embedding_dim': 512,
+        'estimator_fcn_dropout_rate': 0.1
+    }
     k_fold_train_with_explanation(dbname, reqo_config, k=10)
