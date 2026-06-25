@@ -10,8 +10,7 @@ import argparse
 import json
 import re
 from pathlib import Path
-
-import psycopg2
+from typing import Any
 
 # SQLs are grouped as: template_id -> query_id -> SQL string.
 SQLGroups = dict[int, dict[int, str]]
@@ -246,7 +245,7 @@ def format_query_results(rows: list[tuple]) -> str:
 
 
 def execute_query(
-        cursor: psycopg2.extensions.cursor,
+        cursor: Any,
         sql_string: str,
         run_mode: str,
 ) -> str:
@@ -271,7 +270,7 @@ def save_query_results(
 
 
 def set_guc_dict(
-        cursor: psycopg2.extensions.cursor,
+        cursor: Any,
         guc_dict: GUCDict,
 ) -> None:
     """Set all PostgreSQL GUC values in insertion order."""
@@ -292,6 +291,8 @@ def open_connection(
         password: str | None,
 ):
     """Open a PostgreSQL connection."""
+    import psycopg2
+
     conn_kwargs = {
         "dbname": dbname,
         "host": host,
