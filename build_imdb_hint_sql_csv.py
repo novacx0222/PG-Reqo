@@ -1,7 +1,7 @@
 """Build hint-augmented SQL CSVs from RobDP final-level plan hints.
 
-Each parameter group under ``--results-path`` is converted into one CSV with
-columns ``sql_id,query_id,sql_text``. Within one parameter group, each
+Each parameter group under ``--results-path`` is converted into train/test CSVs
+with columns ``sql_id,query_id,sql_text``. Within each split, every
 ``template_id/query_id`` directory becomes one sequential ``sql_id``. Each
 deduplicated hint line under that directory becomes one ``query_id`` and is
 prepended to the original SQL text loaded from ``--sqls-dir``.
@@ -9,6 +9,7 @@ prepended to the original SQL text loaded from ``--sqls-dir``.
 
 import argparse
 import csv
+import random
 import re
 from pathlib import Path
 
@@ -40,7 +41,7 @@ def parse_args() -> argparse.Namespace:
         "--output-dir",
         type=Path,
         required=True,
-        help="Directory where one CSV per parameter group will be written.",
+        help="Directory where train/test CSVs per parameter group will be written.",
     )
     parser.add_argument(
         "--parameter-groups",
@@ -56,10 +57,34 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--include-partial",
-        action="store_false",
-        help="Also read last_level_partial_hints_*.txt files.",
+        action="store_true",
+        default=False,
+        help=(
+            "Also read last_level_partial_hints_*.txt files. "
+            "Default: only read normal hints."
+        ),
+    )
+    parser.add_argument(
+        "--train-ratio",
+        type=float,
+        default=0.9,
+        help="Fraction of query groups assigned to train. Default: 0.9.",
+    )
+    parser.add_argument(
+        "--split-seed",
+        type=int,
+        default=0,
+        help="Random seed for query-group train/test splitting. Default: 0.",
     )
     return parser.parse_args()
+
+
+def validate_args(args: argparse.Namespace) -> None:
+    """Validate split-related arguments."""
+    if not 0 < args.train_ratio < 1:
+        raise ValueError("--train-ratio must be between 0 and 1.")
+    if args.query_id_limit is not None and args.query_id_limit < 0:
+        raise ValueError("--query-id-limit must be non-negative.")
 
 
 def discover_parameter_group_dirs(
@@ -143,26 +168,51 @@ def output_filename_for_group(
         output_dir: Path,
         results_path: Path,
         parameter_group_dir: Path,
+        split_name: str,
 ) -> Path:
-    """Build a stable CSV filename for one parameter group."""
+    """Build a stable CSV filename for one parameter-group split."""
     group_name = parameter_group_dir.relative_to(results_path).as_posix()
-    return output_dir / f"{group_name.replace('/', '__')}.csv"
+    return output_dir / f"{group_name.replace('/', '__')}__{split_name}.csv"
 
 
-def build_group_csv(
-        parameter_group_dir: Path,
-        results_path: Path,
-        output_dir: Path,
+def split_query_dirs(
+        query_dirs: list[tuple[int, int, Path]],
+        train_ratio: float,
+        split_seed: int,
+) -> tuple[list[tuple[int, int, Path]], list[tuple[int, int, Path]]]:
+    """Split query directories while keeping all plans for a query together."""
+    if len(query_dirs) <= 1:
+        return query_dirs, []
+
+    shuffled_query_dirs = list(query_dirs)
+    random.Random(split_seed).shuffle(shuffled_query_dirs)
+    train_count = int(len(shuffled_query_dirs) * train_ratio + 0.5)
+    train_count = min(max(train_count, 1), len(shuffled_query_dirs) - 1)
+
+    train_keys = {
+        (template_id, query_id)
+        for template_id, query_id, _ in shuffled_query_dirs[:train_count]
+    }
+    train_query_dirs = [
+        item
+        for item in query_dirs
+        if (item[0], item[1]) in train_keys
+    ]
+    test_query_dirs = [
+        item
+        for item in query_dirs
+        if (item[0], item[1]) not in train_keys
+    ]
+    return train_query_dirs, test_query_dirs
+
+
+def write_query_dirs_csv(
+        output_csv: Path,
+        query_dirs: list[tuple[int, int, Path]],
         sql_groups: dict[int, dict[int, str]],
         include_partial: bool,
-) -> tuple[Path, int, int]:
-    """Write one parameter group's hint-augmented SQL CSV."""
-    query_dirs = discover_query_dirs(parameter_group_dir)
-    output_csv = output_filename_for_group(
-        output_dir=output_dir,
-        results_path=results_path,
-        parameter_group_dir=parameter_group_dir,
-    )
+) -> tuple[int, int]:
+    """Write one split CSV and return query-group and row counts."""
     output_csv.parent.mkdir(parents=True, exist_ok=True)
 
     row_count = 0
@@ -194,11 +244,62 @@ def build_group_csv(
                 })
                 row_count += 1
 
-    return output_csv, len(query_dirs), row_count
+    return len(query_dirs), row_count
+
+
+def build_group_split_csvs(
+        parameter_group_dir: Path,
+        results_path: Path,
+        output_dir: Path,
+        sql_groups: dict[int, dict[int, str]],
+        include_partial: bool,
+        train_ratio: float,
+        split_seed: int,
+) -> tuple[Path, Path, int, int, int, int]:
+    """Write one parameter group's train/test hint-augmented SQL CSVs."""
+    query_dirs = discover_query_dirs(parameter_group_dir)
+    train_query_dirs, test_query_dirs = split_query_dirs(
+        query_dirs=query_dirs,
+        train_ratio=train_ratio,
+        split_seed=split_seed,
+    )
+    train_csv = output_filename_for_group(
+        output_dir=output_dir,
+        results_path=results_path,
+        parameter_group_dir=parameter_group_dir,
+        split_name="train",
+    )
+    test_csv = output_filename_for_group(
+        output_dir=output_dir,
+        results_path=results_path,
+        parameter_group_dir=parameter_group_dir,
+        split_name="test",
+    )
+    train_group_count, train_row_count = write_query_dirs_csv(
+        output_csv=train_csv,
+        query_dirs=train_query_dirs,
+        sql_groups=sql_groups,
+        include_partial=include_partial,
+    )
+    test_group_count, test_row_count = write_query_dirs_csv(
+        output_csv=test_csv,
+        query_dirs=test_query_dirs,
+        sql_groups=sql_groups,
+        include_partial=include_partial,
+    )
+    return (
+        train_csv,
+        test_csv,
+        train_group_count,
+        test_group_count,
+        train_row_count,
+        test_row_count,
+    )
 
 
 def main() -> None:
     args = parse_args()
+    validate_args(args)
     results_path = args.results_path.expanduser().resolve()
     output_dir = args.output_dir.expanduser().resolve()
 
@@ -214,26 +315,44 @@ def main() -> None:
     )
 
     print(f"Parameter groups: {len(parameter_group_dirs)}")
-    total_small_groups = 0
-    total_rows = 0
+    print(f"Train ratio: {args.train_ratio}")
+    total_train_groups = 0
+    total_test_groups = 0
+    total_train_rows = 0
+    total_test_rows = 0
     for parameter_group_dir in parameter_group_dirs:
-        output_csv, small_group_count, row_count = build_group_csv(
+        (
+            train_csv,
+            test_csv,
+            train_group_count,
+            test_group_count,
+            train_row_count,
+            test_row_count,
+        ) = build_group_split_csvs(
             parameter_group_dir=parameter_group_dir,
             results_path=results_path,
             output_dir=output_dir,
             sql_groups=sql_groups,
             include_partial=args.include_partial,
+            train_ratio=args.train_ratio,
+            split_seed=args.split_seed,
         )
-        total_small_groups += small_group_count
-        total_rows += row_count
+        total_train_groups += train_group_count
+        total_test_groups += test_group_count
+        total_train_rows += train_row_count
+        total_test_rows += test_row_count
         print(
             f"{parameter_group_dir.relative_to(results_path)}: "
-            f"small_groups={small_group_count}, rows={row_count}, "
-            f"csv={output_csv}"
+            f"train_groups={train_group_count}, train_rows={train_row_count}, "
+            f"test_groups={test_group_count}, test_rows={test_row_count}"
         )
+        print(f"  train_csv={train_csv}")
+        print(f"  test_csv={test_csv}")
 
-    print(f"Total small groups: {total_small_groups}")
-    print(f"Total CSV rows: {total_rows}")
+    print(f"Total train groups: {total_train_groups}")
+    print(f"Total test groups: {total_test_groups}")
+    print(f"Total train CSV rows: {total_train_rows}")
+    print(f"Total test CSV rows: {total_test_rows}")
 
 
 if __name__ == "__main__":
