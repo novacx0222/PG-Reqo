@@ -18,7 +18,8 @@ GUCDict = dict[str, str | int | float]
 
 RUN_MODE_PREFIXES = {
     "none": "",
-    "explain": "EXPLAIN",
+    "explain-json": "EXPLAIN (FORMAT JSON)",
+    "explain-text": "EXPLAIN (FORMAT TEXT)",
     "explain-analyze-json": "EXPLAIN (ANALYZE, FORMAT JSON)",
     "explain-analyze-text": "EXPLAIN (ANALYZE, FORMAT TEXT)",
 }
