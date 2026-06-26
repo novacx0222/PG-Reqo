@@ -55,9 +55,9 @@ def parse_args() -> argparse.Namespace:
         help="Keep original SQL query IDs in [0, limit). Default: keep all.",
     )
     parser.add_argument(
-        "--include-parameterized",
+        "--include-partial",
         action="store_false",
-        help="Also read last_level_plans_parameterized_*.txt files.",
+        help="Also read last_level_partial_hints_*.txt files.",
     )
     return parser.parse_args()
 
@@ -103,18 +103,18 @@ def discover_query_dirs(parameter_group_dir: Path) -> list[tuple[int, int, Path]
     return sorted(query_dirs, key=lambda item: (item[0], item[1]))
 
 
-def list_hint_files(query_dir: Path, include_parameterized: bool) -> list[Path]:
+def list_hint_files(query_dir: Path, include_partial: bool) -> list[Path]:
     """List hint files in deterministic round order."""
-    hint_files = list(query_dir.glob("last_level_plans_[0-9]*.txt"))
-    if include_parameterized:
+    hint_files = list(query_dir.glob("last_level_hints_[0-9]*.txt"))
+    if include_partial:
         hint_files.extend(
-            query_dir.glob("last_level_plans_parameterized_[0-9]*.txt")
+            query_dir.glob("last_level_partial_hints_[0-9]*.txt")
         )
     round_pattern = re.compile(r"_(\d+)\.txt$")
     return sorted(
         hint_files,
         key=lambda path: (
-            "parameterized" in path.name,
+            "partial" in path.name,
             int(round_pattern.search(path.name).group(1)),
             path.name,
         ),
@@ -123,12 +123,12 @@ def list_hint_files(query_dir: Path, include_parameterized: bool) -> list[Path]:
 
 def load_deduped_hints(
         query_dir: Path,
-        include_parameterized: bool,
+        include_partial: bool,
 ) -> list[str]:
     """Load non-empty hint lines, deduplicated within one query directory."""
     hints = []
     seen_hints = set()
-    for hint_file in list_hint_files(query_dir, include_parameterized):
+    for hint_file in list_hint_files(query_dir, include_partial):
         with hint_file.open("r", encoding="utf-8") as file:
             for raw_line in file:
                 hint = raw_line.strip()
@@ -154,7 +154,7 @@ def build_group_csv(
         results_path: Path,
         output_dir: Path,
         sql_groups: dict[int, dict[int, str]],
-        include_parameterized: bool,
+        include_partial: bool,
 ) -> tuple[Path, int, int]:
     """Write one parameter group's hint-augmented SQL CSV."""
     query_dirs = discover_query_dirs(parameter_group_dir)
@@ -184,7 +184,7 @@ def build_group_csv(
 
             hints = load_deduped_hints(
                 query_dir=query_dir,
-                include_parameterized=include_parameterized,
+                include_partial=include_partial,
             )
             for hint_query_id, hint in enumerate(hints):
                 writer.writerow({
@@ -222,7 +222,7 @@ def main() -> None:
             results_path=results_path,
             output_dir=output_dir,
             sql_groups=sql_groups,
-            include_parameterized=args.include_parameterized,
+            include_partial=args.include_partial,
         )
         total_small_groups += small_group_count
         total_rows += row_count

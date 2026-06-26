@@ -8,8 +8,7 @@ chosen EXPLAIN mode, and stores both RobDP scores and returned query results.
 import argparse
 from collections.abc import Callable
 from pathlib import Path
-
-import psycopg2
+from typing import Any
 
 from imdb_workload_common import (
     GUCDict,
@@ -71,7 +70,8 @@ def generate_additional_guc_dict_list(
 
 
 def parse_args(
-    description: str = "Run the IMDb workload against the RobDP backend."
+        description: str = "Run the IMDb workload against the RobDP backend.",
+        add_extra_args: Callable[[argparse.ArgumentParser], None] | None = None,
 ) -> argparse.Namespace:
     """Parse common workload options and RobDP-specific GUC options."""
     parser = create_argument_parser(description=description)
@@ -119,6 +119,8 @@ def parse_args(
         default=8,
         help="Path limit. Default: 8.",
     )
+    if add_extra_args is not None:
+        add_extra_args(parser)
     return parser.parse_args()
 
 
@@ -156,14 +158,14 @@ def build_error_profile_path(
 def build_parameter_group_path(additional_guc_dict: GUCDict) -> Path:
     """Build the directory-style name for one RobDP parameter group."""
     return (
-        Path(
-            f"{additional_guc_dict['add_path_limit']}x"
-            f"{additional_guc_dict['main_objective_id']}"
-        )
-        / (
-            f"{additional_guc_dict['retain_path_limit']}x"
-            f"{additional_guc_dict['retain_strategy_id']}"
-        )
+            Path(
+                f"{additional_guc_dict['add_path_limit']}x"
+                f"{additional_guc_dict['main_objective_id']}"
+            )
+            / (
+                f"{additional_guc_dict['retain_path_limit']}x"
+                f"{additional_guc_dict['retain_strategy_id']}"
+            )
     )
 
 
@@ -189,15 +191,15 @@ def build_output_paths(
 
 
 def run_single_sql(
-        cursor: psycopg2.extensions.cursor,
+        cursor: Any,
         sql_string: str,
         base_guc_dict: GUCDict,
         additional_guc_dict: GUCDict,
         score_filename: Path,
-    error_profile_path: Path,
-    results_filename: Path,
-    run_mode: str,
-    pre_profile_guc_dict: GUCDict | None = None,
+        error_profile_path: Path,
+        results_filename: Path,
+        run_mode: str,
+        pre_profile_guc_dict: GUCDict | None = None,
 ) -> None:
     """Configure RobDP, execute one SQL query, and save its returned rows."""
     # Keep this order: shared GUCs, parameter GUCs, output GUCs, profiles, query.
@@ -221,11 +223,11 @@ def run_single_sql(
 
 
 def run_workload(
-    args: argparse.Namespace,
-    sql_groups: SQLGroups,
-    base_guc_dict: GUCDict,
-    additional_guc_dict_list: list[GUCDict],
-    pre_profile_guc_builder: Callable[[Path, int], GUCDict] | None = None,
+        args: argparse.Namespace,
+        sql_groups: SQLGroups,
+        base_guc_dict: GUCDict,
+        additional_guc_dict_list: list[GUCDict],
+        pre_profile_guc_builder: Callable[[Path, int], GUCDict] | None = None,
 ) -> None:
     """Execute all parameter groups, templates, queries, and rounds."""
     with open_connection(

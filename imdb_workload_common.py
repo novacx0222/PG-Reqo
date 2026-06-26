@@ -84,8 +84,8 @@ def create_argument_parser(description: str) -> argparse.ArgumentParser:
         default="explain-analyze-json",
         help=(
             "SQL execution mode. Default: explain-analyze-json. "
-            "Choices: none, explain, explain-analyze-json, "
-            "explain-analyze-text."
+            "Choices: none, explain-json, explain-text, "
+            "explain-analyze-json, explain-analyze-text."
         ),
     )
     return parser
