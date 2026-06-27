@@ -1,4 +1,5 @@
 import os
+import csv
 import numpy as np
 from numpy import nanmean
 from torch import optim
@@ -25,8 +26,129 @@ def load_dataset(dataset, batch_size, shuffle_or_not):
     return dataset_loader, max(labels), min(labels)
 
 
+def _safe_ratio(numerator, denominator):
+    if denominator == 0:
+        return np.nan
+    return float(numerator / denominator)
+
+
+def _get_plan_id(query_plan_ids_i, local_query_idx, candidate_idx):
+    if query_plan_ids_i is None:
+        return candidate_idx
+    plan_ids = query_plan_ids_i[local_query_idx]
+    if candidate_idx >= len(plan_ids):
+        return candidate_idx
+    plan_id = plan_ids[candidate_idx]
+    if plan_id is None or plan_id == "":
+        return candidate_idx
+    return plan_id
+
+
+def write_query_selection_details(
+        filename,
+        fold_id,
+        query_index_i,
+        query_plans_index_i,
+        query_plans_index_num_i,
+        query_postgres_cost_i,
+        pred_iv,
+        actual_latency,
+):
+    """Write per-query plan choices for the best epoch in one fold."""
+    fieldnames = [
+        "fold_id",
+        "fold_query_idx",
+        "query_id",
+        "candidate_count",
+        "postgres_candidate_idx",
+        "postgres_plan_id",
+        "postgres_cost",
+        "postgres_runtime_ms",
+        "model_candidate_idx",
+        "model_plan_id",
+        "model_score",
+        "model_runtime_ms",
+        "optimal_candidate_idx",
+        "optimal_plan_id",
+        "optimal_runtime_ms",
+        "model_vs_postgres_runtime_ratio",
+        "model_vs_optimal_runtime_ratio",
+        "outcome_vs_postgres",
+    ]
+    p_n = 0
+    with open(filename, "w", newline="") as file:
+        writer = csv.DictWriter(file, fieldnames=fieldnames)
+        writer.writeheader()
+
+        for local_query_idx, plan_count in enumerate(query_plans_index_num_i):
+            plan_count = int(plan_count)
+            query_actual_set = actual_latency[p_n:p_n + plan_count]
+            query_pred_set = pred_iv[p_n:p_n + plan_count]
+            query_postgres_cost_set = query_postgres_cost_i[local_query_idx]
+
+            postgres_select_idx = int(np.argmin(query_postgres_cost_set))
+            model_select_idx = int(np.argmin(query_pred_set))
+            optimal_select_idx = int(np.argmin(query_actual_set))
+
+            postgres_runtime = float(query_actual_set[postgres_select_idx])
+            model_runtime = float(query_actual_set[model_select_idx])
+            optimal_runtime = float(query_actual_set[optimal_select_idx])
+
+            if model_runtime < postgres_runtime:
+                outcome = "improved"
+            elif model_runtime > postgres_runtime:
+                outcome = "regressed"
+            else:
+                outcome = "tie"
+
+            query_id = (
+                query_index_i[local_query_idx]
+                if query_index_i is not None
+                else local_query_idx
+            )
+            writer.writerow({
+                "fold_id": fold_id,
+                "fold_query_idx": local_query_idx,
+                "query_id": query_id,
+                "candidate_count": plan_count,
+                "postgres_candidate_idx": postgres_select_idx,
+                "postgres_plan_id": _get_plan_id(
+                    query_plans_index_i,
+                    local_query_idx,
+                    postgres_select_idx,
+                ),
+                "postgres_cost": float(query_postgres_cost_set[postgres_select_idx]),
+                "postgres_runtime_ms": postgres_runtime,
+                "model_candidate_idx": model_select_idx,
+                "model_plan_id": _get_plan_id(
+                    query_plans_index_i,
+                    local_query_idx,
+                    model_select_idx,
+                ),
+                "model_score": float(query_pred_set[model_select_idx]),
+                "model_runtime_ms": model_runtime,
+                "optimal_candidate_idx": optimal_select_idx,
+                "optimal_plan_id": _get_plan_id(
+                    query_plans_index_i,
+                    local_query_idx,
+                    optimal_select_idx,
+                ),
+                "optimal_runtime_ms": optimal_runtime,
+                "model_vs_postgres_runtime_ratio": _safe_ratio(
+                    model_runtime,
+                    postgres_runtime,
+                ),
+                "model_vs_optimal_runtime_ratio": _safe_ratio(
+                    model_runtime,
+                    optimal_runtime,
+                ),
+                "outcome_vs_postgres": outcome,
+            })
+            p_n += plan_count
+
+
 def train(dbname, reqo_config, k_i, trainset, testset, save_path, query_plans_index_num_i, query_postgres_cost_i,
-          save_model):
+          save_model, query_index_i=None, query_plans_index_i=None):
     batch_size = reqo_config["batch_size"]
     table_columns_number = np.load(f'Data/{dbname}/database_statistics/table_columns_number.npy')
 
@@ -53,6 +175,8 @@ def train(dbname, reqo_config, k_i, trainset, testset, save_path, query_plans_in
     epochs = 100
     early_stop = 0
     best_test_perf = float('inf')
+    best_pred_iv = None
+    best_actual_latency = None
     for epoch in range(epochs):
         if early_stop >= 20:
             break
@@ -128,12 +252,14 @@ def train(dbname, reqo_config, k_i, trainset, testset, save_path, query_plans_in
         #     early_stop += 1
 
         # Early stop based on optimal runtime ratio
-        if robustness_results[11] < best_test_perf:
+        if best_pred_iv is None or robustness_results[11] < best_test_perf:
             best_test_perf = robustness_results[11]
             best_model = model.state_dict()
             best_cost_estimation_results = cost_estimation_results
             best_robustness_results = robustness_results
             best_runtime_per_query = runtime_per_query
+            best_pred_iv = pred_iv.copy()
+            best_actual_latency = actual_latency.copy()
             early_stop = 0
         else:
             early_stop += 1
@@ -154,6 +280,16 @@ def train(dbname, reqo_config, k_i, trainset, testset, save_path, query_plans_in
     os.makedirs(save_path, exist_ok=True)
     write_results_to_file(cost_estimation_results + robustness_results, expl_or_not=False,
                           filename=save_path + 'reqo_fold_' + str(k_i) + '_results.txt')
+    write_query_selection_details(
+        filename=save_path + 'reqo_fold_' + str(k_i) + '_query_selection.csv',
+        fold_id=k_i,
+        query_index_i=query_index_i,
+        query_plans_index_i=query_plans_index_i,
+        query_plans_index_num_i=query_plans_index_num_i,
+        query_postgres_cost_i=query_postgres_cost_i,
+        pred_iv=best_pred_iv,
+        actual_latency=best_actual_latency,
+    )
     if save_model:
         torch.save(best_model, save_path + 'reqo_fold_' + str(k_i) + '_model.pth')
     return cost_estimation_results + robustness_results, runtime_per_query
@@ -171,6 +307,12 @@ def k_fold_train(dbname, reqo_config, k=10, save_model=False):
     query_postgres_cost = np.load(
         f'Data/{dbname}/datasets/postgresql_{dbname}_executed_query_plans_postgres_cost.npy', allow_pickle=True
     )
+    query_index = np.load(
+        f'Data/{dbname}/datasets/postgresql_{dbname}_executed_query_index.npy', allow_pickle=True
+    )
+    query_plans_index = np.load(
+        f'Data/{dbname}/datasets/postgresql_{dbname}_executed_query_plans_index.npy', allow_pickle=True
+    )
     k_sample_num = round(len(query_plans_index_num) / k)
 
     all_results = []
@@ -186,10 +328,13 @@ def k_fold_train(dbname, reqo_config, k=10, save_model=False):
 
         query_plans_index_num_i = query_plans_index_num[sample_q_num1:sample_q_num2]
         query_postgres_cost_i = query_postgres_cost[sample_q_num1:sample_q_num2]
+        query_index_i = query_index[sample_q_num1:sample_q_num2]
+        query_plans_index_i = query_plans_index[sample_q_num1:sample_q_num2]
 
         results, runtime_per_query = train(
             dbname, reqo_config, k_i + 1, trainset, testset, save_path + 'fold_' + str(k_i + 1) + '/',
-            query_plans_index_num_i, query_postgres_cost_i, save_model
+            query_plans_index_num_i, query_postgres_cost_i, save_model,
+            query_index_i, query_plans_index_i
         )
         all_results.append(results)
         all_postgres_runtimes.extend(runtime_per_query[0])
