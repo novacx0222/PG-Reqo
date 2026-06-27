@@ -378,7 +378,7 @@ def save_dataset(
             "Please run encoding with --analyze."
         )
 
-    reqo_dataset_dir = (".." / Path("Data") / dbname / "datasets").resolve()
+    reqo_dataset_dir = (Path("Data") / dbname / "datasets").resolve()
     reqo_dataset_dir.mkdir(parents=True, exist_ok=True)
 
     # Group records by query_id.
