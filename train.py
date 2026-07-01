@@ -44,6 +44,123 @@ def _get_plan_id(query_plan_ids_i, local_query_idx, candidate_idx):
     return plan_id
 
 
+def write_fold_split_details(
+        filename,
+        fold_id,
+        query_index,
+        query_plans_index_num,
+        sample_q_num1,
+        sample_q_num2,
+):
+    """Write the train/test query split used by one fold."""
+    fieldnames = [
+        "fold_id",
+        "split",
+        "global_query_idx",
+        "fold_query_idx",
+        "query_id",
+        "candidate_count",
+    ]
+    with open(filename, "w", newline="") as file:
+        writer = csv.DictWriter(file, fieldnames=fieldnames)
+        writer.writeheader()
+
+        fold_test_idx = 0
+        for global_query_idx, query_id in enumerate(query_index):
+            split = (
+                "test"
+                if sample_q_num1 <= global_query_idx < sample_q_num2
+                else "train"
+            )
+            if split == "test":
+                fold_query_idx = fold_test_idx
+                fold_test_idx += 1
+            else:
+                fold_query_idx = ""
+
+            writer.writerow({
+                "fold_id": fold_id,
+                "split": split,
+                "global_query_idx": global_query_idx,
+                "fold_query_idx": fold_query_idx,
+                "query_id": query_id,
+                "candidate_count": int(query_plans_index_num[global_query_idx]),
+            })
+
+
+def write_candidate_score_details(
+        filename,
+        fold_id,
+        query_index_i,
+        query_plans_index_i,
+        query_plans_index_num_i,
+        query_postgres_cost_i,
+        pred_iv,
+        actual_latency,
+):
+    """Write every test candidate's score, runtime, and selection flags."""
+    fieldnames = [
+        "fold_id",
+        "fold_query_idx",
+        "query_id",
+        "candidate_idx",
+        "plan_id",
+        "actual_runtime_ms",
+        "postgres_cost",
+        "model_score",
+        "is_postgres_choice",
+        "is_model_choice",
+        "is_optimal_choice",
+        "runtime_vs_optimal_ratio",
+    ]
+    p_n = 0
+    with open(filename, "w", newline="") as file:
+        writer = csv.DictWriter(file, fieldnames=fieldnames)
+        writer.writeheader()
+
+        for local_query_idx, plan_count in enumerate(query_plans_index_num_i):
+            plan_count = int(plan_count)
+            query_actual_set = actual_latency[p_n:p_n + plan_count]
+            query_pred_set = pred_iv[p_n:p_n + plan_count]
+            query_postgres_cost_set = query_postgres_cost_i[local_query_idx]
+
+            postgres_select_idx = int(np.argmin(query_postgres_cost_set))
+            model_select_idx = int(np.argmin(query_pred_set))
+            optimal_select_idx = int(np.argmin(query_actual_set))
+            optimal_runtime = float(query_actual_set[optimal_select_idx])
+            query_id = (
+                query_index_i[local_query_idx]
+                if query_index_i is not None
+                else local_query_idx
+            )
+
+            for candidate_idx in range(plan_count):
+                actual_runtime = float(query_actual_set[candidate_idx])
+                writer.writerow({
+                    "fold_id": fold_id,
+                    "fold_query_idx": local_query_idx,
+                    "query_id": query_id,
+                    "candidate_idx": candidate_idx,
+                    "plan_id": _get_plan_id(
+                        query_plans_index_i,
+                        local_query_idx,
+                        candidate_idx,
+                    ),
+                    "actual_runtime_ms": actual_runtime,
+                    "postgres_cost": float(query_postgres_cost_set[candidate_idx]),
+                    "model_score": float(query_pred_set[candidate_idx]),
+                    "is_postgres_choice": candidate_idx == postgres_select_idx,
+                    "is_model_choice": candidate_idx == model_select_idx,
+                    "is_optimal_choice": candidate_idx == optimal_select_idx,
+                    "runtime_vs_optimal_ratio": _safe_ratio(
+                        actual_runtime,
+                        optimal_runtime,
+                    ),
+                })
+
+            p_n += plan_count
+
+
 def write_query_selection_details(
         filename,
         fold_id,
@@ -290,6 +407,16 @@ def train(dbname, reqo_config, k_i, trainset, testset, save_path, query_plans_in
         pred_iv=best_pred_iv,
         actual_latency=best_actual_latency,
     )
+    write_candidate_score_details(
+        filename=save_path + 'reqo_fold_' + str(k_i) + '_candidate_scores.csv',
+        fold_id=k_i,
+        query_index_i=query_index_i,
+        query_plans_index_i=query_plans_index_i,
+        query_plans_index_num_i=query_plans_index_num_i,
+        query_postgres_cost_i=query_postgres_cost_i,
+        pred_iv=best_pred_iv,
+        actual_latency=best_actual_latency,
+    )
     if save_model:
         torch.save(best_model, save_path + 'reqo_fold_' + str(k_i) + '_model.pth')
     return cost_estimation_results + robustness_results, runtime_per_query
@@ -330,9 +457,19 @@ def k_fold_train(dbname, reqo_config, k=10, save_model=False):
         query_postgres_cost_i = query_postgres_cost[sample_q_num1:sample_q_num2]
         query_index_i = query_index[sample_q_num1:sample_q_num2]
         query_plans_index_i = query_plans_index[sample_q_num1:sample_q_num2]
+        fold_save_path = save_path + 'fold_' + str(k_i + 1) + '/'
+        os.makedirs(fold_save_path, exist_ok=True)
+        write_fold_split_details(
+            filename=fold_save_path + 'reqo_fold_' + str(k_i + 1) + '_split.csv',
+            fold_id=k_i + 1,
+            query_index=query_index,
+            query_plans_index_num=query_plans_index_num,
+            sample_q_num1=sample_q_num1,
+            sample_q_num2=sample_q_num2,
+        )
 
         results, runtime_per_query = train(
-            dbname, reqo_config, k_i + 1, trainset, testset, save_path + 'fold_' + str(k_i + 1) + '/',
+            dbname, reqo_config, k_i + 1, trainset, testset, fold_save_path,
             query_plans_index_num_i, query_postgres_cost_i, save_model,
             query_index_i, query_plans_index_i
         )
