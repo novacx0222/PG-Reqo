@@ -1,4 +1,4 @@
-"""Build full hint-augmented SQL CSVs from RobDP final-level plan hints.
+"""Build full hint-augmented SQL CSVs from exported plan hints.
 
 Each parameter group under ``--results-path`` is converted into one complete CSV
 with columns ``sql_id,query_id,sql_text``. Within one parameter group, each
@@ -14,10 +14,12 @@ from pathlib import Path
 
 from imdb_workload_common import load_sql_groups
 
+HINT_SOURCE_CHOICES = ("robdp", "robdp-with-partial", "reqo")
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Build full hint-augmented IMDb SQL CSVs from RobDP results."
+        description="Build full hint-augmented IMDb SQL CSVs from exported hints."
     )
     parser.add_argument(
         "--results-path",
@@ -55,12 +57,13 @@ def parse_args() -> argparse.Namespace:
         help="Keep original SQL query IDs in [0, limit). Default: keep all.",
     )
     parser.add_argument(
-        "--include-partial",
-        action="store_true",
-        default=False,
+        "--hint-source",
+        choices=HINT_SOURCE_CHOICES,
+        default="robdp",
         help=(
-            "Also read last_level_partial_hints_*.txt files. "
-            "Default: only read normal hints."
+            "Hint source mode: robdp reads only normal RobDP hints; "
+            "robdp-with-partial reads normal and partial RobDP hints; "
+            "reqo reads only Reqo GUC hints. Default: robdp."
         ),
     )
     return parser.parse_args()
@@ -75,6 +78,7 @@ def validate_args(args: argparse.Namespace) -> None:
 def discover_parameter_group_dirs(
         results_path: Path,
         parameter_groups: list[str] | None,
+        hint_source: str,
 ) -> list[Path]:
     """Return parameter-group directories like results_path/1x0/0x0."""
     if parameter_groups is not None:
@@ -86,6 +90,12 @@ def discover_parameter_group_dirs(
     group_pattern = re.compile(r"^\d+x\d+$")
     group_dirs = []
     for add_group_dir in results_path.iterdir():
+        if add_group_dir.is_dir() and add_group_dir.name == "reqo_guc":
+            if hint_source == "reqo":
+                group_dirs.append(add_group_dir)
+            continue
+        if hint_source == "reqo":
+            continue
         if (
                 not add_group_dir.is_dir()
                 or not group_pattern.fullmatch(add_group_dir.name)
@@ -113,10 +123,13 @@ def discover_query_dirs(parameter_group_dir: Path) -> list[tuple[int, int, Path]
     return sorted(query_dirs, key=lambda item: (item[0], item[1]))
 
 
-def list_hint_files(query_dir: Path, include_partial: bool) -> list[Path]:
+def list_hint_files(query_dir: Path, hint_source: str) -> list[Path]:
     """List hint files in deterministic round order."""
-    hint_files = list(query_dir.glob("last_level_hints_[0-9]*.txt"))
-    if include_partial:
+    if hint_source == "reqo":
+        hint_files = list(query_dir.glob("reqo_hints_[0-9]*.txt"))
+    else:
+        hint_files = list(query_dir.glob("last_level_hints_[0-9]*.txt"))
+    if hint_source == "robdp-with-partial":
         hint_files.extend(
             query_dir.glob("last_level_partial_hints_[0-9]*.txt")
         )
@@ -133,12 +146,12 @@ def list_hint_files(query_dir: Path, include_partial: bool) -> list[Path]:
 
 def load_deduped_hints(
         query_dir: Path,
-        include_partial: bool,
+        hint_source: str,
 ) -> list[str]:
     """Load non-empty hint lines, deduplicated within one query directory."""
     hints = []
     seen_hints = set()
-    for hint_file in list_hint_files(query_dir, include_partial):
+    for hint_file in list_hint_files(query_dir, hint_source):
         with hint_file.open("r", encoding="utf-8") as file:
             for raw_line in file:
                 hint = raw_line.strip()
@@ -164,7 +177,7 @@ def build_group_csv(
         results_path: Path,
         output_dir: Path,
         sql_groups: dict[int, dict[int, str]],
-        include_partial: bool,
+        hint_source: str,
 ) -> tuple[Path, int, int]:
     """Write one parameter group's full hint-augmented SQL CSV."""
     query_dirs = discover_query_dirs(parameter_group_dir)
@@ -194,7 +207,7 @@ def build_group_csv(
 
             hints = load_deduped_hints(
                 query_dir=query_dir,
-                include_partial=include_partial,
+                hint_source=hint_source,
             )
             for hint_query_id, hint in enumerate(hints):
                 writer.writerow({
@@ -222,6 +235,7 @@ def main() -> None:
     parameter_group_dirs = discover_parameter_group_dirs(
         results_path=results_path,
         parameter_groups=args.parameter_groups,
+        hint_source=args.hint_source,
     )
 
     print(f"Parameter groups: {len(parameter_group_dirs)}")
@@ -233,7 +247,7 @@ def main() -> None:
             results_path=results_path,
             output_dir=output_dir,
             sql_groups=sql_groups,
-            include_partial=args.include_partial,
+            hint_source=args.hint_source,
         )
         total_query_groups += query_group_count
         total_rows += row_count
