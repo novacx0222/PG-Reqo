@@ -32,22 +32,82 @@ def _safe_ratio(numerator, denominator):
     return float(numerator / denominator)
 
 
-def _get_plan_id(query_plan_ids_i, local_query_idx, candidate_idx):
-    if query_plan_ids_i is None:
+def _get_candidate_id(query_candidate_ids_i, local_query_idx, candidate_idx):
+    if query_candidate_ids_i is None:
         return candidate_idx
-    plan_ids = query_plan_ids_i[local_query_idx]
-    if candidate_idx >= len(plan_ids):
+    candidate_ids = query_candidate_ids_i[local_query_idx]
+    if candidate_idx >= len(candidate_ids):
         return candidate_idx
-    plan_id = plan_ids[candidate_idx]
-    if plan_id is None or plan_id == "":
+    candidate_id = candidate_ids[candidate_idx]
+    if candidate_id is None or candidate_id == "":
         return candidate_idx
-    return plan_id
+    return candidate_id
+
+
+def _blank_if_none(value):
+    return "" if value is None else value
+
+
+def _default_query_metadata(query_group_id):
+    return {
+        "query_group_id": query_group_id,
+        "template_id": None,
+        "original_query_id": None,
+    }
+
+
+def _normalize_query_metadata(metadata, fallback_query_group_id):
+    if metadata is None:
+        return _default_query_metadata(fallback_query_group_id)
+    if hasattr(metadata, "item") and not isinstance(metadata, dict):
+        try:
+            metadata = metadata.item()
+        except ValueError:
+            pass
+    if not isinstance(metadata, dict):
+        return _default_query_metadata(fallback_query_group_id)
+
+    query_group_id = metadata.get("query_group_id", fallback_query_group_id)
+    return {
+        "query_group_id": query_group_id,
+        "template_id": metadata.get("template_id"),
+        "original_query_id": metadata.get("original_query_id"),
+    }
+
+
+def _metadata_for_index(query_metadata, query_index, idx):
+    if query_index is None:
+        query_index = list(range(idx + 1))
+    query_group_id = query_index[idx]
+    if query_metadata is None or idx >= len(query_metadata):
+        return _default_query_metadata(query_group_id)
+    return _normalize_query_metadata(query_metadata[idx], query_group_id)
+
+
+def load_query_metadata(dbname, query_index):
+    """Load optional query metadata aligned with executed_query_index.npy."""
+    metadata_path = f'Data/{dbname}/datasets/postgresql_{dbname}_executed_query_metadata.npy'
+    if not os.path.exists(metadata_path):
+        return [
+            _default_query_metadata(query_group_id)
+            for query_group_id in query_index
+        ]
+
+    raw_metadata = np.load(metadata_path, allow_pickle=True)
+    normalized_metadata = [
+        _normalize_query_metadata(raw_metadata[idx], query_index[idx])
+        if idx < len(raw_metadata)
+        else _default_query_metadata(query_index[idx])
+        for idx in range(len(query_index))
+    ]
+    return np.array(normalized_metadata, dtype=object)
 
 
 def write_fold_split_details(
         filename,
         fold_id,
         query_index,
+        query_metadata,
         query_plans_index_num,
         sample_q_num1,
         sample_q_num2,
@@ -58,7 +118,9 @@ def write_fold_split_details(
         "split",
         "global_query_idx",
         "fold_query_idx",
-        "query_id",
+        "query_group_id",
+        "template_id",
+        "original_query_id",
         "candidate_count",
     ]
     with open(filename, "w", newline="") as file:
@@ -66,7 +128,12 @@ def write_fold_split_details(
         writer.writeheader()
 
         fold_test_idx = 0
-        for global_query_idx, query_id in enumerate(query_index):
+        for global_query_idx, query_group_id in enumerate(query_index):
+            metadata = _metadata_for_index(
+                query_metadata,
+                query_index,
+                global_query_idx,
+            )
             split = (
                 "test"
                 if sample_q_num1 <= global_query_idx < sample_q_num2
@@ -83,7 +150,9 @@ def write_fold_split_details(
                 "split": split,
                 "global_query_idx": global_query_idx,
                 "fold_query_idx": fold_query_idx,
-                "query_id": query_id,
+                "query_group_id": metadata["query_group_id"],
+                "template_id": _blank_if_none(metadata["template_id"]),
+                "original_query_id": _blank_if_none(metadata["original_query_id"]),
                 "candidate_count": int(query_plans_index_num[global_query_idx]),
             })
 
@@ -92,6 +161,7 @@ def write_candidate_score_details(
         filename,
         fold_id,
         query_index_i,
+        query_metadata_i,
         query_plans_index_i,
         query_plans_index_num_i,
         query_postgres_cost_i,
@@ -102,9 +172,11 @@ def write_candidate_score_details(
     fieldnames = [
         "fold_id",
         "fold_query_idx",
-        "query_id",
+        "query_group_id",
+        "template_id",
+        "original_query_id",
         "candidate_idx",
-        "plan_id",
+        "candidate_id",
         "actual_runtime_ms",
         "postgres_cost",
         "model_score",
@@ -128,10 +200,15 @@ def write_candidate_score_details(
             model_select_idx = int(np.argmin(query_pred_set))
             optimal_select_idx = int(np.argmin(query_actual_set))
             optimal_runtime = float(query_actual_set[optimal_select_idx])
-            query_id = (
+            query_group_id = (
                 query_index_i[local_query_idx]
                 if query_index_i is not None
                 else local_query_idx
+            )
+            metadata = _metadata_for_index(
+                query_metadata_i,
+                query_index_i,
+                local_query_idx,
             )
 
             for candidate_idx in range(plan_count):
@@ -139,9 +216,11 @@ def write_candidate_score_details(
                 writer.writerow({
                     "fold_id": fold_id,
                     "fold_query_idx": local_query_idx,
-                    "query_id": query_id,
+                    "query_group_id": metadata["query_group_id"],
+                    "template_id": _blank_if_none(metadata["template_id"]),
+                    "original_query_id": _blank_if_none(metadata["original_query_id"]),
                     "candidate_idx": candidate_idx,
-                    "plan_id": _get_plan_id(
+                    "candidate_id": _get_candidate_id(
                         query_plans_index_i,
                         local_query_idx,
                         candidate_idx,
@@ -165,6 +244,7 @@ def write_query_selection_details(
         filename,
         fold_id,
         query_index_i,
+        query_metadata_i,
         query_plans_index_i,
         query_plans_index_num_i,
         query_postgres_cost_i,
@@ -175,18 +255,20 @@ def write_query_selection_details(
     fieldnames = [
         "fold_id",
         "fold_query_idx",
-        "query_id",
+        "query_group_id",
+        "template_id",
+        "original_query_id",
         "candidate_count",
         "postgres_candidate_idx",
-        "postgres_plan_id",
+        "postgres_candidate_id",
         "postgres_cost",
         "postgres_runtime_ms",
         "model_candidate_idx",
-        "model_plan_id",
+        "model_candidate_id",
         "model_score",
         "model_runtime_ms",
         "optimal_candidate_idx",
-        "optimal_plan_id",
+        "optimal_candidate_id",
         "optimal_runtime_ms",
         "model_vs_postgres_runtime_ratio",
         "model_vs_optimal_runtime_ratio",
@@ -218,18 +300,25 @@ def write_query_selection_details(
             else:
                 outcome = "tie"
 
-            query_id = (
+            query_group_id = (
                 query_index_i[local_query_idx]
                 if query_index_i is not None
                 else local_query_idx
             )
+            metadata = _metadata_for_index(
+                query_metadata_i,
+                query_index_i,
+                local_query_idx,
+            )
             writer.writerow({
                 "fold_id": fold_id,
                 "fold_query_idx": local_query_idx,
-                "query_id": query_id,
+                "query_group_id": metadata["query_group_id"],
+                "template_id": _blank_if_none(metadata["template_id"]),
+                "original_query_id": _blank_if_none(metadata["original_query_id"]),
                 "candidate_count": plan_count,
                 "postgres_candidate_idx": postgres_select_idx,
-                "postgres_plan_id": _get_plan_id(
+                "postgres_candidate_id": _get_candidate_id(
                     query_plans_index_i,
                     local_query_idx,
                     postgres_select_idx,
@@ -237,7 +326,7 @@ def write_query_selection_details(
                 "postgres_cost": float(query_postgres_cost_set[postgres_select_idx]),
                 "postgres_runtime_ms": postgres_runtime,
                 "model_candidate_idx": model_select_idx,
-                "model_plan_id": _get_plan_id(
+                "model_candidate_id": _get_candidate_id(
                     query_plans_index_i,
                     local_query_idx,
                     model_select_idx,
@@ -245,7 +334,7 @@ def write_query_selection_details(
                 "model_score": float(query_pred_set[model_select_idx]),
                 "model_runtime_ms": model_runtime,
                 "optimal_candidate_idx": optimal_select_idx,
-                "optimal_plan_id": _get_plan_id(
+                "optimal_candidate_id": _get_candidate_id(
                     query_plans_index_i,
                     local_query_idx,
                     optimal_select_idx,
@@ -265,7 +354,7 @@ def write_query_selection_details(
 
 
 def train(dbname, reqo_config, k_i, trainset, testset, save_path, query_plans_index_num_i, query_postgres_cost_i,
-          save_model, query_index_i=None, query_plans_index_i=None):
+          save_model, query_index_i=None, query_metadata_i=None, query_plans_index_i=None):
     batch_size = reqo_config["batch_size"]
     table_columns_number = np.load(f'Data/{dbname}/database_statistics/table_columns_number.npy')
 
@@ -401,6 +490,7 @@ def train(dbname, reqo_config, k_i, trainset, testset, save_path, query_plans_in
         filename=save_path + 'reqo_fold_' + str(k_i) + '_query_selection.csv',
         fold_id=k_i,
         query_index_i=query_index_i,
+        query_metadata_i=query_metadata_i,
         query_plans_index_i=query_plans_index_i,
         query_plans_index_num_i=query_plans_index_num_i,
         query_postgres_cost_i=query_postgres_cost_i,
@@ -411,6 +501,7 @@ def train(dbname, reqo_config, k_i, trainset, testset, save_path, query_plans_in
         filename=save_path + 'reqo_fold_' + str(k_i) + '_candidate_scores.csv',
         fold_id=k_i,
         query_index_i=query_index_i,
+        query_metadata_i=query_metadata_i,
         query_plans_index_i=query_plans_index_i,
         query_plans_index_num_i=query_plans_index_num_i,
         query_postgres_cost_i=query_postgres_cost_i,
@@ -437,6 +528,7 @@ def k_fold_train(dbname, reqo_config, k=10, save_model=False):
     query_index = np.load(
         f'Data/{dbname}/datasets/postgresql_{dbname}_executed_query_index.npy', allow_pickle=True
     )
+    query_metadata = load_query_metadata(dbname, query_index)
     query_plans_index = np.load(
         f'Data/{dbname}/datasets/postgresql_{dbname}_executed_query_plans_index.npy', allow_pickle=True
     )
@@ -456,6 +548,7 @@ def k_fold_train(dbname, reqo_config, k=10, save_model=False):
         query_plans_index_num_i = query_plans_index_num[sample_q_num1:sample_q_num2]
         query_postgres_cost_i = query_postgres_cost[sample_q_num1:sample_q_num2]
         query_index_i = query_index[sample_q_num1:sample_q_num2]
+        query_metadata_i = query_metadata[sample_q_num1:sample_q_num2]
         query_plans_index_i = query_plans_index[sample_q_num1:sample_q_num2]
         fold_save_path = save_path + 'fold_' + str(k_i + 1) + '/'
         os.makedirs(fold_save_path, exist_ok=True)
@@ -463,6 +556,7 @@ def k_fold_train(dbname, reqo_config, k=10, save_model=False):
             filename=fold_save_path + 'reqo_fold_' + str(k_i + 1) + '_split.csv',
             fold_id=k_i + 1,
             query_index=query_index,
+            query_metadata=query_metadata,
             query_plans_index_num=query_plans_index_num,
             sample_q_num1=sample_q_num1,
             sample_q_num2=sample_q_num2,
@@ -471,7 +565,7 @@ def k_fold_train(dbname, reqo_config, k=10, save_model=False):
         results, runtime_per_query = train(
             dbname, reqo_config, k_i + 1, trainset, testset, fold_save_path,
             query_plans_index_num_i, query_postgres_cost_i, save_model,
-            query_index_i, query_plans_index_i
+            query_index_i, query_metadata_i, query_plans_index_i
         )
         all_results.append(results)
         all_postgres_runtimes.extend(runtime_per_query[0])

@@ -1,9 +1,9 @@
 """Run no-hint SQLs for the test queries recorded in Reqo fold splits.
 
-The fold split CSVs produced by train.py contain query_id values that match the
-sequential sql_id used by the hint SQL CSV builder. This script reconstructs
-that sql_id -> original SQL mapping, executes only split == test queries, and
-writes one runtime row per fold/query/round.
+The fold split CSVs produced by train.py contain query_group_id values that
+match the sequential query group id used by the hint SQL CSV builder. This
+script reconstructs that group id -> original SQL mapping, executes only
+split == test queries, and writes one runtime row per fold/query/round.
 """
 
 import argparse
@@ -56,8 +56,9 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help=(
             "Optional hint result parameter group directory used to build the "
-            "training CSV, such as results/1x13/1x13. If omitted, sql_id is "
-            "reconstructed from all loaded SQLs sorted by template/query id."
+            "training CSV, such as results/1x13/1x13. If omitted, "
+            "query_group_id is reconstructed from all loaded SQLs sorted by "
+            "template/original query id."
         ),
     )
     return parser.parse_args()
@@ -91,25 +92,30 @@ def discover_query_dirs(parameter_group_dir: Path) -> list[tuple[int, int]]:
 def build_sql_by_group_id(
         sql_groups: SQLGroups,
         parameter_group_dir: Path | None,
-) -> dict[int, str]:
-    """Build train.py query_id/sql_id -> original no-hint SQL."""
+) -> dict[int, dict[str, Any]]:
+    """Build train.py query_group_id -> original no-hint SQL and metadata."""
     if parameter_group_dir is None:
         ordered_query_ids = [
-            (template_id, query_id)
+            (template_id, original_query_id)
             for template_id in sorted(sql_groups)
-            for query_id in sorted(sql_groups[template_id])
+            for original_query_id in sorted(sql_groups[template_id])
         ]
     else:
         ordered_query_ids = discover_query_dirs(parameter_group_dir)
 
     sql_by_group_id = {}
-    for group_id, (template_id, query_id) in enumerate(ordered_query_ids):
+    for query_group_id, (template_id, original_query_id) in enumerate(ordered_query_ids):
         try:
-            sql_by_group_id[group_id] = sql_groups[template_id][query_id]
+            sql_by_group_id[query_group_id] = {
+                "sql": sql_groups[template_id][original_query_id],
+                "template_id": template_id,
+                "original_query_id": original_query_id,
+            }
         except KeyError as exc:
             raise KeyError(
                 "Cannot find original SQL for reconstructed mapping: "
-                f"group_id={group_id}, template_id={template_id}, query_id={query_id}"
+                f"query_group_id={query_group_id}, template_id={template_id}, "
+                f"original_query_id={original_query_id}"
             ) from exc
     return sql_by_group_id
 
@@ -143,7 +149,9 @@ def load_test_queries(fold_results_dir: Path) -> list[dict[str, Any]]:
                     "fold_id": fold_id,
                     "fold_query_idx": int(row["fold_query_idx"]),
                     "global_query_idx": int(row["global_query_idx"]),
-                    "query_id": int(row["query_id"]),
+                    "query_group_id": int(row["query_group_id"]),
+                    "template_id": row["template_id"],
+                    "original_query_id": row["original_query_id"],
                 })
     return sorted(rows, key=lambda item: (item["fold_id"], item["fold_query_idx"]))
 
@@ -191,7 +199,9 @@ FIELDNAMES = [
     "fold_id",
     "fold_query_idx",
     "global_query_idx",
-    "query_id",
+    "query_group_id",
+    "template_id",
+    "original_query_id",
     "round",
     "runtime_ms",
     "status",
@@ -213,7 +223,7 @@ def main() -> None:
     test_queries = load_test_queries(args.fold_results_dir)
 
     print(f"Loaded {len(test_queries)} test query rows from {args.fold_results_dir}")
-    print(f"Reconstructed {len(sql_by_group_id)} query_id -> SQL mappings")
+    print(f"Reconstructed {len(sql_by_group_id)} query_group_id -> SQL mappings")
     write_header(args.output_csv)
 
     with open_connection(
@@ -225,19 +235,24 @@ def main() -> None:
     ) as conn:
         with conn.cursor() as cursor:
             for query_row in test_queries:
-                query_id = query_row["query_id"]
-                sql = sql_by_group_id.get(query_id)
-                if sql is None:
+                query_group_id = query_row["query_group_id"]
+                sql_entry = sql_by_group_id.get(query_group_id)
+                if sql_entry is None:
                     base_row = {
                         "system_name": args.system_name,
                         **query_row,
                         "runtime_ms": "",
                         "status": "missing_sql",
-                        "error": f"No SQL mapping for query_id={query_id}",
+                        "error": f"No SQL mapping for query_group_id={query_group_id}",
                     }
                     for round_number in range(1, args.rounds + 1):
                         append_row(args.output_csv, {**base_row, "round": round_number})
                     continue
+                sql = sql_entry["sql"]
+                if query_row["template_id"] == "":
+                    query_row["template_id"] = sql_entry["template_id"]
+                if query_row["original_query_id"] == "":
+                    query_row["original_query_id"] = sql_entry["original_query_id"]
 
                 for round_number in range(1, args.rounds + 1):
                     print(
@@ -245,7 +260,7 @@ def main() -> None:
                         f"system={args.system_name}, "
                         f"fold={query_row['fold_id']}, "
                         f"fold_query_idx={query_row['fold_query_idx']}, "
-                        f"query_id={query_id}, "
+                        f"query_group_id={query_group_id}, "
                         f"round={round_number}/{args.rounds}"
                     )
                     try:

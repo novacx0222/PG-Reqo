@@ -1,10 +1,9 @@
 """Build full hint-augmented SQL CSVs from exported plan hints.
 
-Each parameter group under ``--results-path`` is converted into one complete CSV
-with columns ``sql_id,query_id,sql_text``. Within one parameter group, each
-``template_id/query_id`` directory becomes one sequential ``sql_id``. Each
-deduplicated hint line under that directory becomes one ``query_id`` and is
-prepended to the original SQL text loaded from ``--sqls-dir``.
+Each parameter group under ``--results-path`` is converted into one complete
+CSV. ``query_group_id`` is the sequential Reqo query-group id, while
+``template_id`` and ``original_query_id`` preserve the original IMDb identity.
+``candidate_id`` is the hint/plan id within one query group.
 """
 
 import argparse
@@ -15,6 +14,13 @@ from pathlib import Path
 from imdb_workload_common import load_sql_groups
 
 HINT_SOURCE_CHOICES = ("robdp", "robdp-with-partial", "reqo")
+CSV_FIELDNAMES = [
+    "query_group_id",
+    "template_id",
+    "original_query_id",
+    "candidate_id",
+    "sql_text",
+]
 
 
 def parse_args() -> argparse.Namespace:
@@ -192,27 +198,29 @@ def build_group_csv(
     with output_csv.open("w", encoding="utf-8", newline="") as file:
         writer = csv.DictWriter(
             file,
-            fieldnames=["sql_id", "query_id", "sql_text"],
+            fieldnames=CSV_FIELDNAMES,
         )
         writer.writeheader()
 
-        for sql_id, (template_id, original_query_id, query_dir) in enumerate(query_dirs):
+        for query_group_id, (template_id, original_query_id, query_dir) in enumerate(query_dirs):
             try:
                 original_sql = sql_groups[template_id][original_query_id]
             except KeyError as exc:
                 raise KeyError(
                     "Cannot find original SQL for "
-                    f"template_id={template_id}, query_id={original_query_id}"
+                    f"template_id={template_id}, original_query_id={original_query_id}"
                 ) from exc
 
             hints = load_deduped_hints(
                 query_dir=query_dir,
                 hint_source=hint_source,
             )
-            for hint_query_id, hint in enumerate(hints):
+            for candidate_id, hint in enumerate(hints):
                 writer.writerow({
-                    "sql_id": sql_id,
-                    "query_id": hint_query_id,
+                    "query_group_id": query_group_id,
+                    "template_id": template_id,
+                    "original_query_id": original_query_id,
+                    "candidate_id": candidate_id,
                     "sql_text": f"{hint}\n{original_sql}",
                 })
                 row_count += 1

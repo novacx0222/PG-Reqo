@@ -6,7 +6,7 @@ Inputs:
   - original_plain_runtime.csv
   - robdp_plain_runtime.csv
 
-Outputs are intentionally fold-oriented and do not require template metadata.
+Outputs are fold-oriented and preserve template/query metadata when present.
 """
 
 import argparse
@@ -79,7 +79,7 @@ def query_key(row: dict[str, Any]) -> tuple[int, int, str]:
     return (
         as_int(row["fold_id"]),
         as_int(row["fold_query_idx"]),
-        str(row["query_id"]),
+        str(row["query_group_id"]),
     )
 
 
@@ -102,7 +102,9 @@ def load_split_rows(fold_results_dir: Path) -> dict[tuple[int, int, str], dict[s
                     "fold_id": as_int(row["fold_id"]),
                     "fold_query_idx": as_int(row["fold_query_idx"]),
                     "global_query_idx": as_int(row["global_query_idx"]),
-                    "query_id": str(row["query_id"]),
+                    "query_group_id": str(row["query_group_id"]),
+                    "template_id": row["template_id"],
+                    "original_query_id": row["original_query_id"],
                     "candidate_count": as_int(row["candidate_count"]),
                 }
     return rows
@@ -115,6 +117,9 @@ def load_selection_rows(fold_results_dir: Path) -> dict[tuple[int, int, str], di
             for row in csv.DictReader(file):
                 key = query_key(row)
                 rows[key] = {
+                    "query_group_id": row["query_group_id"],
+                    "template_id": row["template_id"],
+                    "original_query_id": row["original_query_id"],
                     "optimal_runtime_ms": as_float_or_none(row["optimal_runtime_ms"]),
                     "min_cost_pg_runtime_ms": as_float_or_none(row["postgres_runtime_ms"]),
                     "reqo_runtime_ms": as_float_or_none(row["model_runtime_ms"]),
@@ -305,7 +310,9 @@ def main() -> None:
         "fold_id",
         "fold_query_idx",
         "global_query_idx",
-        "query_id",
+        "query_group_id",
+        "template_id",
+        "original_query_id",
         "candidate_count",
         "original_runtime_ms",
         "original_rounds_ok",

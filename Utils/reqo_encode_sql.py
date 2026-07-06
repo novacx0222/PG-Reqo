@@ -33,6 +33,7 @@ Example:
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -44,6 +45,80 @@ import torch
 from pandas import DataFrame
 from torch_geometric.data import Data
 from tqdm import tqdm
+
+
+def normalize_id_value(value: Any) -> Any:
+    """Normalize CSV id values while preserving non-numeric ids."""
+    if pd.isna(value):
+        return None
+    if isinstance(value, (np.integer, int)):
+        return int(value)
+    if isinstance(value, (np.floating, float)) and float(value).is_integer():
+        return int(value)
+    value_str = str(value)
+    if value_str.isdigit():
+        return int(value_str)
+    return value
+
+
+def normalize_sql_rows(sql_rows_df: DataFrame) -> List[Dict[str, Any]]:
+    """Normalize metadata-rich SQL CSV rows."""
+    required_columns = {
+        "query_group_id",
+        "template_id",
+        "original_query_id",
+        "candidate_id",
+        "sql_text",
+    }
+    missing_columns = sorted(required_columns - set(sql_rows_df.columns))
+    if missing_columns:
+        raise ValueError(f"SQL CSV is missing required columns: {missing_columns}")
+
+    rows = []
+    for row_number, row in enumerate(sql_rows_df.to_dict("records"), start=1):
+        query_group_id = normalize_id_value(row["query_group_id"])
+        candidate_id = normalize_id_value(row["candidate_id"])
+        template_id = normalize_id_value(row.get("template_id"))
+        original_query_id = normalize_id_value(row.get("original_query_id"))
+
+        rows.append({
+            "row_number": row_number,
+            "query_group_id": query_group_id,
+            "candidate_id": candidate_id,
+            "template_id": template_id,
+            "original_query_id": original_query_id,
+            "sql_text": row["sql_text"],
+        })
+    return rows
+
+
+def metadata_value(metadata: Dict[str, Any], key: str) -> Any:
+    value = metadata.get(key)
+    return "" if value is None else value
+
+
+def query_metadata_from_record(rec: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "query_group_id": rec["query_group_id"],
+        "template_id": rec.get("template_id"),
+        "original_query_id": rec.get("original_query_id"),
+    }
+
+
+def write_query_metadata_csv(path: Path, query_metadata: List[Dict[str, Any]]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8", newline="") as file:
+        writer = csv.DictWriter(
+            file,
+            fieldnames=["query_group_id", "template_id", "original_query_id"],
+        )
+        writer.writeheader()
+        for metadata in query_metadata:
+            writer.writerow({
+                "query_group_id": metadata_value(metadata, "query_group_id"),
+                "template_id": metadata_value(metadata, "template_id"),
+                "original_query_id": metadata_value(metadata, "original_query_id"),
+            })
 
 
 def parse_args() -> argparse.Namespace:
@@ -343,9 +418,10 @@ def save_dataset(
         )
 
         # Store useful metadata directly on the PyG Data object.
-        data.query_id = rec["query_id"]
-        data.plan_id = rec.get("plan_id", str(rec.get("line_number", "")))
-        data.sql_id = rec["query_id"]
+        data.query_group_id = rec["query_group_id"]
+        data.template_id = rec.get("template_id")
+        data.original_query_id = rec.get("original_query_id")
+        data.candidate_id = rec["candidate_id"]
         data.sql = rec["sql"]
         data.metadata = rec["metadata"]
         data.plan = rec["plan"]
@@ -381,15 +457,16 @@ def save_dataset(
     reqo_dataset_dir = (Path("Data") / dbname / "datasets").resolve()
     reqo_dataset_dir.mkdir(parents=True, exist_ok=True)
 
-    # Group records by query_id.
+    # Group records by query_group_id.
     # Original Reqo needs query_plans_index_num to know how many candidate
     # plans belong to each query.
     grouped: Dict[str, List[Dict[str, Any]]] = {}
     for rec in records:
-        grouped.setdefault(rec["query_id"], []).append(rec)
+        grouped.setdefault(rec["query_group_id"], []).append(rec)
 
     dataset_rows = []
     query_index = []
+    query_metadata = []
     query_plans_index = []
     query_plans_index_num = []
     query_plans_postgres_cost = []
@@ -397,8 +474,8 @@ def save_dataset(
     dropped_groups = 0
     dropped_plans = 0
 
-    for query_id in sorted(grouped.keys()):
-        group = grouped[query_id]
+    for query_group_id in sorted(grouped.keys()):
+        group = grouped[query_group_id]
 
         # For real plan selector training, this should usually be >= 2.
         if len(group) < min_candidates_per_query:
@@ -428,7 +505,7 @@ def save_dataset(
                 edge_list_e_by_2 = edge_index.astype(np.int64).tolist()
             else:
                 raise ValueError(
-                    f"Unexpected edge_index shape for query_id={query_id}: "
+                    f"Unexpected edge_index shape for query_group_id={query_group_id}: "
                     f"{edge_index.shape}"
                 )
 
@@ -438,7 +515,7 @@ def save_dataset(
                 float(runtime),
             ])
 
-            plan_ids.append(rec.get("plan_id", str(rec.get("line_number", ""))))
+            plan_ids.append(rec["candidate_id"])
             postgres_costs.append(
                 float(rec["metadata"].get("postgres_total_cost", np.nan))
             )
@@ -446,7 +523,8 @@ def save_dataset(
         kept = len(dataset_rows) - start_len
 
         if kept >= min_candidates_per_query:
-            query_index.append(query_id)
+            query_index.append(query_group_id)
+            query_metadata.append(query_metadata_from_record(group[0]))
             query_plans_index.append(plan_ids)
             query_plans_index_num.append(kept)
             query_plans_postgres_cost.append(postgres_costs)
@@ -473,6 +551,10 @@ def save_dataset(
         np.array(query_index, dtype=object),
     )
     np.save(
+        f"{prefix}_metadata.npy",
+        np.array(query_metadata, dtype=object),
+    )
+    np.save(
         f"{prefix}_plans_index.npy",
         np.array(query_plans_index, dtype=object),
     )
@@ -484,6 +566,8 @@ def save_dataset(
         f"{prefix}_plans_postgres_cost.npy",
         np.array(query_plans_postgres_cost, dtype=object),
     )
+    metadata_csv_path = reqo_dataset_dir / f"postgresql_{dbname}_executed_query_metadata.csv"
+    write_query_metadata_csv(metadata_csv_path, query_metadata)
 
     summary = {
         "reqo_dataset_dir": str(reqo_dataset_dir.resolve()),
@@ -495,6 +579,8 @@ def save_dataset(
         "files": {
             "plans_dataset": f"{prefix}_plans_dataset.npy",
             "index": f"{prefix}_index.npy",
+            "metadata": f"{prefix}_metadata.npy",
+            "metadata_csv": str(metadata_csv_path),
             "plans_index": f"{prefix}_plans_index.npy",
             "plans_index_num": f"{prefix}_plans_index_num.npy",
             "plans_postgres_cost": f"{prefix}_plans_postgres_cost.npy",
@@ -516,9 +602,10 @@ def main() -> None:
 
     stats_dir = Path(args.stats_dir).resolve()
     sql_file_path = Path(args.sql_file).resolve()
-    sql_rows_df: DataFrame = pd.read_csv(sql_file_path, usecols=["sql_id", "query_id", "sql_text"])
+    sql_rows_df: DataFrame = pd.read_csv(sql_file_path)
+    sql_rows = normalize_sql_rows(sql_rows_df)
 
-    print(f"Loaded {len(sql_rows_df)} SQL queries from {args.sql_file}")
+    print(f"Loaded {len(sql_rows)} SQL queries from {args.sql_file}")
     print(f"Database statistics dir: {stats_dir}")
     print("Mode:",
           "EXPLAIN ANALYZE, every SQL will be executed" if args.analyze else "EXPLAIN only, queries are planned but not executed")
@@ -537,33 +624,35 @@ def main() -> None:
             if args.statement_timeout_ms and args.statement_timeout_ms > 0:
                 cur.execute("SET statement_timeout = %s", args.statement_timeout_ms)
 
-            for item in tqdm(sql_rows_df.iterrows(), desc="Explaining SQLs", total=len(sql_rows_df)):
-                query_id, sql_id, sql_text = item[1]
+            for item in tqdm(sql_rows, desc="Explaining SQLs", total=len(sql_rows)):
                 try:
                     explain_doc = run_explain_json_with_cursor(
                         cur=cur,
-                        sql=sql_text,
+                        sql=item["sql_text"],
                         analyze=args.analyze,
                     )
                     plans_by_row.append({
-                        "query_id": query_id,
-                        "sql_id": sql_id,
-                        "sql": sql_text,
+                        **item,
+                        "sql": item["sql_text"],
                         "plan": explain_doc["Plan"],
                     })
                 except Exception as exc:
                     conn.rollback()
                     error_obj = {
-                        "query_id": query_id,
-                        "sql_id": sql_id,
-                        "sql": sql_text,
+                        "query_group_id": item["query_group_id"],
+                        "template_id": item["template_id"],
+                        "original_query_id": item["original_query_id"],
+                        "candidate_id": item["candidate_id"],
+                        "sql": item["sql_text"],
                         "error": repr(exc),
                     }
                     if args.skip_errors:
                         errors.append(error_obj)
-                        print(f"\nSkipped line {sql_id}: {exc}")
+                        print(f"\nSkipped line {item['row_number']}: {exc}")
                         continue
-                    raise RuntimeError(f"Failed on sql_id {sql_id}: {sql_text}\n{exc}") from exc
+                    raise RuntimeError(
+                        f"Failed on row {item['row_number']}: {item['sql_text']}\n{exc}"
+                    ) from exc
 
     if not plans_by_row:
         raise RuntimeError("No SQL plans were successfully collected.")
@@ -590,12 +679,16 @@ def main() -> None:
                 stats_dir=stats_dir,
                 norm_stats=norm_stats,
             )
-            metadata["sql_id"] = item["sql_id"]
-            metadata["query_id"] = item["query_id"]
+            metadata["query_group_id"] = item["query_group_id"]
+            metadata["template_id"] = item["template_id"]
+            metadata["original_query_id"] = item["original_query_id"]
+            metadata["candidate_id"] = item["candidate_id"]
 
             records.append({
-                "query_id": item["query_id"],
-                "sql_id": item["sql_id"],
+                "query_group_id": item["query_group_id"],
+                "template_id": item["template_id"],
+                "original_query_id": item["original_query_id"],
+                "candidate_id": item["candidate_id"],
                 "sql": item["sql"],
                 "x": x,
                 "edge_index": edge_index,
@@ -604,16 +697,20 @@ def main() -> None:
             })
         except Exception as exc:
             error_obj = {
-                "query_id": item["query_id"],
-                "sql_id": item["sql_id"],
+                "query_group_id": item["query_group_id"],
+                "template_id": item["template_id"],
+                "original_query_id": item["original_query_id"],
+                "candidate_id": item["candidate_id"],
                 "sql": item["sql"],
                 "error": repr(exc),
             }
             if args.skip_errors:
                 errors.append(error_obj)
-                print(f"\nSkipped encoding line {item['sql_id']}: {exc}")
+                print(f"\nSkipped encoding line {item['row_number']}: {exc}")
                 continue
-            raise RuntimeError(f"Failed encoding line {item['sql_id']}: {item['sql']}\n{exc}") from exc
+            raise RuntimeError(
+                f"Failed encoding line {item['row_number']}: {item['sql']}\n{exc}"
+            ) from exc
 
     if not records:
         raise RuntimeError("No SQL plans were successfully encoded.")

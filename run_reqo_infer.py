@@ -7,10 +7,10 @@ encodes them into Reqo graph features, runs the trained model, and ranks
 candidate SQLs by the model's integrated score (pred_iv, lower is better).
 
 Input CSV format:
-  sql_id,query_id,sql_text
+  query_group_id,template_id,original_query_id,candidate_id,sql_text
 
 The sql_text column should already contain any pg_hint_plan hint comment plus
-the original SQL. The input query_id is treated as the candidate id.
+the original SQL.
 """
 
 import argparse
@@ -28,7 +28,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--candidate-csv",
         required=True,
-        help="CSV with columns sql_id,query_id,sql_text.",
+        help=(
+            "CSV with columns query_group_id,template_id,"
+            "original_query_id,candidate_id,sql_text."
+        ),
     )
 
     parser.add_argument("--dbname", required=True, help="PostgreSQL database name.")
@@ -93,21 +96,26 @@ def parse_args() -> argparse.Namespace:
 
 
 def load_candidates(args: argparse.Namespace) -> list[dict[str, Any]]:
-    """Load candidate SQLs from a CSV.
-
-    The CSV's query_id column is the candidate id within each sql_id group.
-    """
+    """Load candidate SQLs from a CSV."""
     with Path(args.candidate_csv).open("r", encoding="utf-8", newline="") as file:
         reader = csv.DictReader(file)
-        required = {"sql_id", "query_id", "sql_text"}
+        required = {
+            "query_group_id",
+            "template_id",
+            "original_query_id",
+            "candidate_id",
+            "sql_text",
+        }
         if reader.fieldnames is None or not required.issubset(reader.fieldnames):
             raise ValueError(
                 f"Candidate CSV must contain columns: {sorted(required)}"
             )
         return [
             {
-                "sql_id": row["sql_id"],
-                "candidate_id": row["query_id"],
+                "query_group_id": row["query_group_id"],
+                "template_id": row["template_id"],
+                "original_query_id": row["original_query_id"],
+                "candidate_id": row["candidate_id"],
                 "sql_text": row["sql_text"],
             }
             for row in reader
@@ -196,7 +204,7 @@ def collect_candidate_plans(
                         continue
                     raise RuntimeError(
                         "Failed to EXPLAIN candidate "
-                        f"sql_id={candidate['sql_id']} "
+                        f"query_group_id={candidate['query_group_id']} "
                         f"candidate_id={candidate['candidate_id']}\n{exc}"
                     ) from exc
     return plans, errors
@@ -224,7 +232,9 @@ def encode_candidates(
             x=torch.tensor(x, dtype=torch.float32),
             edge_index=torch.tensor(edge_index, dtype=torch.long),
         )
-        data.sql_id = item["sql_id"]
+        data.query_group_id = item["query_group_id"]
+        data.template_id = item["template_id"]
+        data.original_query_id = item["original_query_id"]
         data.candidate_id = item["candidate_id"]
         data.sql = item["sql_text"]
         data.metadata = metadata
@@ -259,7 +269,9 @@ def run_model_inference(
 
             for i in range(batch.num_graphs):
                 scored_rows.append({
-                    "sql_id": str(batch.sql_id[i]),
+                    "query_group_id": str(batch.query_group_id[i]),
+                    "template_id": str(batch.template_id[i]),
+                    "original_query_id": str(batch.original_query_id[i]),
                     "candidate_id": str(batch.candidate_id[i]),
                     "sql_text": str(batch.sql[i]),
                     "postgres_total_cost": float(batch.metadata[i].get("postgres_total_cost", np.nan)),
@@ -271,17 +283,17 @@ def run_model_inference(
 
 
 def rank_rows(scored_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Rank candidates within each sql_id by pred_iv ascending."""
+    """Rank candidates within each query group by pred_iv ascending."""
     grouped = defaultdict(list)
     for row in scored_rows:
-        grouped[row["sql_id"]].append(row)
+        grouped[row["query_group_id"]].append(row)
 
     ranked_rows = []
-    for sql_id in sorted(grouped.keys(), key=str):
-        rows = sorted(grouped[sql_id], key=lambda row: row["pred_iv"])
+    for query_group_id in sorted(grouped.keys(), key=str):
+        rows = sorted(grouped[query_group_id], key=lambda row: row["pred_iv"])
         for rank, row in enumerate(rows, start=1):
             ranked_rows.append({
-                "sql_id": sql_id,
+                "query_group_id": query_group_id,
                 "rank": rank,
                 **row,
             })
@@ -292,7 +304,9 @@ def write_ranked_csv(output_csv: Path, ranked_rows: list[dict[str, Any]]) -> Non
     """Write ranked candidates to a CSV file."""
     output_csv.parent.mkdir(parents=True, exist_ok=True)
     fieldnames = [
-        "sql_id",
+        "query_group_id",
+        "template_id",
+        "original_query_id",
         "rank",
         "candidate_id",
         "pred_iv",
@@ -367,16 +381,16 @@ def main() -> None:
     ranked_rows = rank_rows(scored_rows)
     write_ranked_csv(Path(args.output_csv), ranked_rows)
 
-    best_by_sql_id = {}
+    best_by_query_group_id = {}
     for row in ranked_rows:
         if row["rank"] == 1:
-            best_by_sql_id[row["sql_id"]] = row
+            best_by_query_group_id[row["query_group_id"]] = row
 
     print(f"Saved ranked results: {args.output_csv}")
-    for sql_id, row in best_by_sql_id.items():
+    for query_group_id, row in best_by_query_group_id.items():
         print(
             "Best candidate: "
-            f"sql_id={sql_id}, "
+            f"query_group_id={query_group_id}, "
             f"candidate_id={row['candidate_id']}, "
             f"pred_iv={row['pred_iv']:.6f}"
         )
