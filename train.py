@@ -1,5 +1,7 @@
 import os
 import csv
+from typing import Any
+
 import numpy as np
 from numpy import nanmean
 from torch import optim
@@ -84,9 +86,9 @@ def _metadata_for_index(query_metadata, query_index, idx):
     return _normalize_query_metadata(query_metadata[idx], query_group_id)
 
 
-def load_query_metadata(dbname, query_index):
+def load_query_metadata(dbname, query_index, experiment_name: str):
     """Load optional query metadata aligned with executed_query_index.npy."""
-    metadata_path = f'Data/{dbname}/datasets/postgresql_{dbname}_executed_query_metadata.npy'
+    metadata_path = f'Data/{dbname}/datasets/{experiment_name}/postgresql_{dbname}_executed_query_metadata.npy'
     if not os.path.exists(metadata_path):
         return [
             _default_query_metadata(query_group_id)
@@ -513,24 +515,30 @@ def train(dbname, reqo_config, k_i, trainset, testset, save_path, query_plans_in
     return cost_estimation_results + robustness_results, runtime_per_query
 
 
-def k_fold_train(dbname, reqo_config, k=10, save_model=False):
-    save_path = f'Results/{dbname}/'
+def k_fold_train(
+        dbname: str, experiment_name: str, reqo_config: dict[str, Any], k: int = 10, save_model: bool = False
+):
+    save_path = f'Results/{dbname}/{experiment_name}/'
     os.makedirs(save_path, exist_ok=True)
     dataset = np.load(
-        f'Data/{dbname}/datasets/postgresql_{dbname}_executed_query_plans_dataset.npy', allow_pickle=True
+        f'Data/{dbname}/datasets/{experiment_name}/postgresql_{dbname}_executed_query_plans_dataset.npy',
+        allow_pickle=True
     )
     query_plans_index_num = np.load(
-        f'Data/{dbname}/datasets/postgresql_{dbname}_executed_query_plans_index_num.npy', allow_pickle=True
+        f'Data/{dbname}/datasets/{experiment_name}/postgresql_{dbname}_executed_query_plans_index_num.npy',
+        allow_pickle=True
     )
     query_postgres_cost = np.load(
-        f'Data/{dbname}/datasets/postgresql_{dbname}_executed_query_plans_postgres_cost.npy', allow_pickle=True
+        f'Data/{dbname}/datasets/{experiment_name}/postgresql_{dbname}_executed_query_plans_postgres_cost.npy',
+        allow_pickle=True
     )
     query_index = np.load(
-        f'Data/{dbname}/datasets/postgresql_{dbname}_executed_query_index.npy', allow_pickle=True
+        f'Data/{dbname}/datasets/{experiment_name}/postgresql_{dbname}_executed_query_index.npy', allow_pickle=True
     )
-    query_metadata = load_query_metadata(dbname, query_index)
+    query_metadata = load_query_metadata(dbname, query_index, experiment_name)
     query_plans_index = np.load(
-        f'Data/{dbname}/datasets/postgresql_{dbname}_executed_query_plans_index.npy', allow_pickle=True
+        f'Data/{dbname}/datasets/{experiment_name}/postgresql_{dbname}_executed_query_plans_index.npy',
+        allow_pickle=True
     )
     k_sample_num = round(len(query_plans_index_num) / k)
 
@@ -596,4 +604,6 @@ if __name__ == '__main__':
         'estimator_estimation_embedding_dim': 512,
         'estimator_fcn_dropout_rate': 0.1
     }
-    k_fold_train(dbname, reqo_config, k=10)
+    k_fold_train(
+        dbname, experiment_name="default", reqo_config=reqo_config, k=10, save_model=True
+    )

@@ -1,4 +1,6 @@
 import os
+from typing import Any
+
 import numpy as np
 from numpy import nanmean
 from torch import optim
@@ -192,34 +194,36 @@ def train_with_explanation(dbname, reqo_config, k_i, trainset, testset, save_pat
     return cost_estimation_results + robustness_results + explanation_results, runtime_per_query
 
 
-def k_fold_train_with_explanation(dbname, reqo_config, k=10, save_model=False):
-    save_path = f'Results/{dbname}/'
+def k_fold_train_with_explanation(
+        dbname: str, experiment_name: str, reqo_config: dict[str, Any], k: int = 10, save_model: bool = False
+):
+    save_path = f'Results/{dbname}/{experiment_name}/'
     os.makedirs(save_path, exist_ok=True)
     # Load data of executed query plans
     dataset = np.load(
-        f'Data/{dbname}/datasets/postgresql_{dbname}_executed_query_plans_dataset_with_explanation.npy',
+        f'Data/{dbname}/datasets/{experiment_name}/postgresql_{dbname}_executed_query_plans_dataset_with_explanation.npy',
         allow_pickle=True)
     query_plans_index_num = np.load(
-        f'Data/{dbname}/datasets/postgresql_{dbname}_executed_query_plans_index_num_with_explanation.npy',
+        f'Data/{dbname}/datasets/{experiment_name}/postgresql_{dbname}_executed_query_plans_index_num_with_explanation.npy',
         allow_pickle=True)
     query_postgres_cost = np.load(
-        f'Data/{dbname}/datasets/postgresql_{dbname}_executed_query_plans_postgres_cost_with_explanation.npy',
+        f'Data/{dbname}/datasets/{experiment_name}/postgresql_{dbname}_executed_query_plans_postgres_cost_with_explanation.npy',
         allow_pickle=True)
     # Load data for explanation
     subtree_num_load = np.load(
-        f'Data/{dbname}/datasets/postgresql_{dbname}_executed_query_plans_subtrees_num_with_explanation.npy',
+        f'Data/{dbname}/datasets/{experiment_name}/postgresql_{dbname}_executed_query_plans_subtrees_num_with_explanation.npy',
         allow_pickle=True)
     subtree_index_load = np.load(
-        f'Data/{dbname}/datasets/postgresql_{dbname}_executed_query_plans_sample_index_with_explanation.npy',
+        f'Data/{dbname}/datasets/{experiment_name}/postgresql_{dbname}_executed_query_plans_sample_index_with_explanation.npy',
         allow_pickle=True)
     subtree_labels_load = np.load(
-        f'Data/{dbname}/datasets/postgresql_{dbname}_executed_query_plans_subtree_labels_with_explanation.npy',
+        f'Data/{dbname}/datasets/{experiment_name}/postgresql_{dbname}_executed_query_plans_subtree_labels_with_explanation.npy',
         allow_pickle=True)
     subtree_join_pair_index = np.load(
-        f'Data/{dbname}/datasets/postgresql_{dbname}_executed_query_plans_join_pair_index_for_explain_with_explanation.npy',
+        f'Data/{dbname}/datasets/{experiment_name}/postgresql_{dbname}_executed_query_plans_join_pair_index_for_explain_with_explanation.npy',
         allow_pickle=True)
     subtree_postgres_cost = np.load(
-        f'Data/{dbname}/datasets/postgresql_{dbname}_executed_query_plans_subtree_postgres_cost_with_explanation.npy',
+        f'Data/{dbname}/datasets/{experiment_name}/postgresql_{dbname}_executed_query_plans_subtree_postgres_cost_with_explanation.npy',
         allow_pickle=True)
     k_sample_num = round(len(query_plans_index_num) / k)
 
@@ -276,4 +280,6 @@ if __name__ == "__main__":
         'estimator_estimation_embedding_dim': 512,
         'estimator_fcn_dropout_rate': 0.1
     }
-    k_fold_train_with_explanation(dbname, reqo_config, k=10)
+    k_fold_train_with_explanation(
+        dbname, experiment_name="default", reqo_config=reqo_config, k=10, save_model=True
+    )

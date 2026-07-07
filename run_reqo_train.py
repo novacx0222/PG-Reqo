@@ -7,10 +7,12 @@ It does not redefine the model, loss, or training loop.
 """
 
 import argparse
+from typing import Any
+
 from train import k_fold_train
 
 
-def build_reqo_config(args):
+def build_reqo_config(args) -> dict[str, Any]:
     """Build the config expected by the original train.py."""
     return {
         "batch_size": args.batch_size,
@@ -40,6 +42,7 @@ def main():
     parser = argparse.ArgumentParser()
 
     parser.add_argument("--dbname", required=True)
+    parser.add_argument("--experiment_name", required=True)
     parser.add_argument("--k", type=int, default=10)
     parser.add_argument("--save-model", action="store_true")
 
@@ -68,6 +71,7 @@ def main():
 
     k_fold_train(
         dbname=args.dbname,
+        experiment_name=args.experiment_name,
         reqo_config=reqo_config,
         k=args.k,
         save_model=args.save_model,
