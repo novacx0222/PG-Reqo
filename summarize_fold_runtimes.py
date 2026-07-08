@@ -4,7 +4,8 @@ Expected new-flow inputs:
 
   - folds/original_fold_<k>.csv
   - results/original/<template_id>/<query_id>/results_*.txt
-  - results/<robdp_parameter_group>/<template_id>/<query_id>/results_*.txt
+  - RobDP runtime results from run_imdb_with_robdp.py:
+      <robdp_runtime>/<template_id>/<query_id>/results_*.txt
   - optional results/reqo_guc/<template_id>/<query_id>/results_*.txt
   - RobDP last-level trained fold outputs:
       <dir>/fold_<k>/reqo_fold_<k>_query_selection.csv
@@ -46,20 +47,16 @@ def parse_args() -> argparse.Namespace:
         required=True,
         help="Root written by run_imdb_with_pg/robdp/reqo_guc.py.",
     )
-    parser.add_argument(
-        "--parameter-group",
-        type=str,
-        default=None,
-        help="RobDP result group path, for example 8x1/0x0.",
-    )
-    parser.add_argument(
-        "--experiment-name",
-        type=str,
-        default=None,
-        help="Alternative to --parameter-group, e.g. 8x1__0x0.",
-    )
     parser.add_argument("--original-results-dir", type=Path, default=None)
-    parser.add_argument("--robdp-results-dir", type=Path, default=None)
+    parser.add_argument(
+        "--robdp-runtime-results-dir",
+        type=Path,
+        required=True,
+        help=(
+            "Directory containing RobDP no-hint runtime results for one "
+            "parameter group, usually written by run_imdb_with_robdp.py."
+        ),
+    )
     parser.add_argument("--reqo-guc-results-dir", type=Path, default=None)
     parser.add_argument(
         "--robdp-trained-results-dir",
@@ -97,24 +94,10 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def parameter_group_from_args(args: argparse.Namespace) -> str | None:
-    if args.parameter_group:
-        return args.parameter_group.strip("/")
-    if args.experiment_name:
-        return args.experiment_name.replace("__", "/").strip("/")
-    return None
-
-
 def resolve_input_dirs(args: argparse.Namespace) -> tuple[Path, Path, Path]:
     results_path = args.results_path.expanduser().resolve()
-    parameter_group = parameter_group_from_args(args)
-    if args.robdp_results_dir is None and parameter_group is None:
-        raise ValueError(
-            "Either --robdp-results-dir or --parameter-group/--experiment-name "
-            "is required."
-        )
     original_dir = args.original_results_dir or results_path / "original"
-    robdp_dir = args.robdp_results_dir or results_path / parameter_group
+    robdp_dir = args.robdp_runtime_results_dir
     reqo_guc_dir = args.reqo_guc_results_dir or results_path / "reqo_guc"
     return original_dir, robdp_dir, reqo_guc_dir
 
@@ -564,7 +547,7 @@ def main() -> None:
 
     require_dir(folds_dir, "folds")
     require_dir(original_dir, "original results")
-    require_dir(robdp_dir, "RobDP results")
+    require_dir(robdp_dir, "RobDP runtime results")
     require_dir(reqo_guc_dir, "Reqo-GUC runner results")
     require_dir(robdp_trained_dir, "RobDP trained results")
     require_dir(reqo_guc_trained_dir, "Reqo-GUC trained results")
@@ -601,7 +584,7 @@ def main() -> None:
 
     print(f"Fold source: {args.fold_source}")
     print(f"Original results: {original_dir}")
-    print(f"RobDP results: {robdp_dir}")
+    print(f"RobDP runtime results: {robdp_dir}")
     print(f"Reqo-GUC runner results: {reqo_guc_dir}")
     print(f"RobDP trained results: {robdp_trained_dir}")
     print(f"Reqo-GUC trained results: {reqo_guc_trained_dir}")

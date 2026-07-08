@@ -26,6 +26,7 @@ DATABASE_STATISTICS_DIR="${STATS_DIR}"
 
 EXPERIMENT_ROOT="/data/robdp/imdb-presplit-0708"
 RUNNER_RESULTS_PATH="${EXPERIMENT_ROOT}/runner_outputs"
+ROBDP_RUNTIME_RESULTS_PATH="${EXPERIMENT_ROOT}/robdp_runtime_outputs"
 HINT_SQL_CSV_DIR="${EXPERIMENT_ROOT}/hint-sql-csv"
 FOLDS_DIR="${EXPERIMENT_ROOT}/folds"
 FOLD_SQL_ROOT="${EXPERIMENT_ROOT}/fold_sql"
@@ -36,6 +37,7 @@ SUMMARY_ROOT="${EXPERIMENT_ROOT}/summary"
 
 SKIP_TEMPLATE_IDS=(29)
 QUERY_ID_LIMIT="100"
+ROBDP_RUNTIME_QUERY_ID_LIMIT="1"
 STATEMENT_TIMEOUT="60s"
 ROUNDS="1"
 FOLD_COUNT=2
@@ -168,6 +170,7 @@ Database:         ${DBNAME}
 SQLs:             ${SQLS_DIR}
 Experiment root:  ${EXPERIMENT_ROOT}
 Runner results:   ${RUNNER_RESULTS_PATH}
+RobDP runtime:    ${ROBDP_RUNTIME_RESULTS_PATH}
 Hint SQL CSVs:    ${HINT_SQL_CSV_DIR}
 Folds:            ${FOLDS_DIR}
 Fold SQL:         ${FOLD_SQL_ROOT}
@@ -178,13 +181,14 @@ Summary:          ${SUMMARY_ROOT}
 Groups:           ${GROUPS[*]}
 Fold count:       ${FOLD_COUNT}
 Stages:           ${STAGES}
+RobDP runtime query-id-limit: ${ROBDP_RUNTIME_QUERY_ID_LIMIT}
 EOF
 }
 
 count_total_steps() {
   TOTAL_STEPS=0
   if stage_enabled "runner"; then
-    TOTAL_STEPS=$((TOTAL_STEPS + 3))
+    TOTAL_STEPS=$((TOTAL_STEPS + 4))
   fi
   if stage_enabled "csv"; then
     TOTAL_STEPS=$((TOTAL_STEPS + 2))
@@ -304,6 +308,11 @@ for group in "${GROUPS[@]}"; do
   all_robdp_runner_dirs+=("${RUNNER_RESULTS_PATH}/$(parameter_dir "$group")")
 done
 
+all_robdp_runtime_dirs=()
+for group in "${GROUPS[@]}"; do
+  all_robdp_runtime_dirs+=("${ROBDP_RUNTIME_RESULTS_PATH}/$(parameter_dir "$group")")
+done
+
 print_configuration
 count_total_steps
 
@@ -320,6 +329,31 @@ CMD=(
 INPUTS=("${REPO_ROOT}/run_imdb_with_pg.py" "$SQLS_DIR")
 OUTPUTS=("${RUNNER_RESULTS_PATH}/original")
 run_step "runner" "Run original PostgreSQL baseline"
+
+robdp_runtime_workload_args=(
+  --dbname "$DBNAME"
+  --host "$DB_HOST"
+  --port "$DB_PORT"
+  --user "$DB_USER"
+  --sqls-dir "$SQLS_DIR"
+  --workload-name "$WORKLOAD_NAME"
+  --skip-template-id-vals "${SKIP_TEMPLATE_IDS[@]}"
+  --query-id-limit "$ROBDP_RUNTIME_QUERY_ID_LIMIT"
+  --results-path "$ROBDP_RUNTIME_RESULTS_PATH"
+  --statement-timeout "$STATEMENT_TIMEOUT"
+  --rounds "$ROUNDS"
+  --run-mode explain-analyze-json
+)
+
+CMD=(
+  "$PYTHON" "${REPO_ROOT}/run_imdb_with_robdp.py"
+  "${robdp_runtime_workload_args[@]}"
+  --main-objective-id-vals "${MAIN_OBJECTIVE_IDS[@]}"
+  --retain-strategy-id-vals "${RETAIN_STRATEGY_IDS[@]}"
+)
+INPUTS=("${REPO_ROOT}/run_imdb_with_robdp.py" "$SQLS_DIR")
+OUTPUTS=("${all_robdp_runtime_dirs[@]}")
+run_step "runner" "Run RobDP no-hint runtime"
 
 CMD=(
   "$PYTHON" "${REPO_ROOT}/run_imdb_with_robdp_hints.py"
@@ -528,7 +562,7 @@ for group in "${GROUPS[@]}"; do
     "$PYTHON" "${REPO_ROOT}/summarize_fold_runtimes.py"
     --folds-dir "$FOLDS_DIR"
     --results-path "$RUNNER_RESULTS_PATH"
-    --experiment-name "$group"
+    --robdp-runtime-results-dir "${ROBDP_RUNTIME_RESULTS_PATH}/$(parameter_dir "$group")"
     --robdp-trained-results-dir "${TRAIN_RESULTS_ROOT}/${source_name}"
     --reqo-guc-trained-results-dir "${TRAIN_RESULTS_ROOT}/${REQO_GUC_SOURCE}"
     --output-dir "${SUMMARY_ROOT}/${group}"
@@ -537,7 +571,7 @@ for group in "${GROUPS[@]}"; do
     "${REPO_ROOT}/summarize_fold_runtimes.py"
     "$FOLDS_DIR"
     "${RUNNER_RESULTS_PATH}/original"
-    "${RUNNER_RESULTS_PATH}/$(parameter_dir "$group")"
+    "${ROBDP_RUNTIME_RESULTS_PATH}/$(parameter_dir "$group")"
     "${RUNNER_RESULTS_PATH}/reqo_guc"
     "${TRAIN_RESULTS_ROOT}/${source_name}"
     "${TRAIN_RESULTS_ROOT}/${REQO_GUC_SOURCE}"
