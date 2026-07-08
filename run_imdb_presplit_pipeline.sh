@@ -128,6 +128,16 @@ robdp_source_name() {
   echo "robdp_last_level_${group}"
 }
 
+source_sql_file() {
+  local source_name="$1"
+  if [[ "$source_name" == "$REQO_GUC_SOURCE" ]]; then
+    echo "${HINT_SQL_CSV_DIR}/reqo_guc.csv"
+  else
+    local group="${source_name#robdp_last_level_}"
+    echo "${HINT_SQL_CSV_DIR}/${group}.csv"
+  fi
+}
+
 has_content() {
   local path="$1"
   if [[ -f "$path" ]]; then
@@ -199,7 +209,7 @@ count_total_steps() {
     TOTAL_STEPS=$((TOTAL_STEPS + 1))
   fi
   if stage_enabled "encode"; then
-    TOTAL_STEPS=$((TOTAL_STEPS + ( ${#GROUPS[@]} + 1 ) * FOLD_COUNT))
+    TOTAL_STEPS=$((TOTAL_STEPS + ( ${#GROUPS[@]} + 1 ) * (FOLD_COUNT + 1)))
   fi
   if stage_enabled "train"; then
     TOTAL_STEPS=$((TOTAL_STEPS + ( ${#GROUPS[@]} + 1 ) * FOLD_COUNT))
@@ -488,6 +498,31 @@ done
 trainable_sources+=("$REQO_GUC_SOURCE")
 
 for source_name in "${trainable_sources[@]}"; do
+  plans_cache_file="${ENCODING_ROOT}/${source_name}/full/plans_cache.json"
+  CMD=(
+    "$PYTHON" "${REPO_ROOT}/Utils/reqo_encode_sql_save_pt.py"
+    --sql-file "$(source_sql_file "$source_name")"
+    --dbname "$DBNAME"
+    --host "$DB_HOST"
+    --port "$DB_PORT"
+    --user "$DB_USER"
+    --stats-dir "$STATS_DIR"
+    --output-dir "${ENCODING_ROOT}/${source_name}/full"
+    --analyze
+    --plans-cache-output "$plans_cache_file"
+    --plans-cache-only
+    --statement-timeout-ms 60000
+    --min-candidates-per-query "$MIN_CANDIDATES_PER_QUERY"
+  )
+  INPUTS=(
+    "${REPO_ROOT}/Utils/reqo_encode_sql.py"
+    "${REPO_ROOT}/Utils/reqo_encode_sql_save_pt.py"
+    "$STATS_DIR"
+    "$(source_sql_file "$source_name")"
+  )
+  OUTPUTS=("$plans_cache_file")
+  run_step "encode" "Collect raw plan cache for ${source_name}"
+
   for ((fold_id = 1; fold_id <= FOLD_COUNT; fold_id++)); do
     CMD=(
       "$PYTHON" "${REPO_ROOT}/encode_fold_datasets.py"
@@ -501,6 +536,7 @@ for source_name in "${trainable_sources[@]}"; do
       --port "$DB_PORT"
       --user "$DB_USER"
       --stats-dir "$STATS_DIR"
+      --plans-cache-input "$plans_cache_file"
       --statement-timeout-ms 60000
       --min-candidates-per-query "$MIN_CANDIDATES_PER_QUERY"
       --repo-root "$REPO_ROOT"
@@ -511,6 +547,7 @@ for source_name in "${trainable_sources[@]}"; do
       "${REPO_ROOT}/Utils/reqo_encode_sql_save_pt.py"
       "${REPO_ROOT}/Utils/reqo_pt_to_npy.py"
       "$STATS_DIR"
+      "$plans_cache_file"
       "${FOLD_SQL_ROOT}/${source_name}/fold_${fold_id}/train.csv"
       "${FOLD_SQL_ROOT}/${source_name}/fold_${fold_id}/test.csv"
     )

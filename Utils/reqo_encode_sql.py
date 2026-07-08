@@ -125,7 +125,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Encode one SQL-per-line file into Reqo raw graph encodings."
     )
-    parser.add_argument("--sql-file", required=True, help="Path to a file. Each non-empty line is one SQL.")
+    parser.add_argument("--sql-file", default=None, help="Path to a metadata-rich SQL CSV.")
     parser.add_argument("--dbname", required=True, help="PostgreSQL database name.")
     parser.add_argument("--host", default="localhost", help="PostgreSQL host.")
     parser.add_argument("--port", default="5432", help="PostgreSQL port.")
@@ -179,6 +179,27 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--plans-cache-input",
+        default=None,
+        help=(
+            "Optional raw EXPLAIN JSON cache produced by --plans-cache-output. "
+            "When set, this script skips PostgreSQL and encodes plans from the cache."
+        ),
+    )
+    parser.add_argument(
+        "--plans-cache-output",
+        default=None,
+        help="Optional JSON path where raw EXPLAIN plans will be saved before encoding.",
+    )
+    parser.add_argument(
+        "--plans-cache-only",
+        action="store_true",
+        help=(
+            "Collect and save --plans-cache-output, then exit without encoding. "
+            "Useful for running EXPLAIN ANALYZE exactly once per source."
+        ),
+    )
+    parser.add_argument(
         "--analyze",
         action="store_true",
         help=(
@@ -203,6 +224,61 @@ def parse_args() -> argparse.Namespace:
         help="Prefix for generated query ids. Default: q, producing q000001, q000002, ...",
     )
     return parser.parse_args()
+
+
+def plan_cache_key(item: Dict[str, Any]) -> tuple[Any, Any, Any]:
+    """Use stable IMDb/candidate identity instead of fold-local query_group_id."""
+    return (
+        normalize_id_value(item.get("template_id")),
+        normalize_id_value(item.get("original_query_id")),
+        normalize_id_value(item.get("candidate_id")),
+    )
+
+
+def save_plans_cache(path: Path, plans_by_row: List[Dict[str, Any]]) -> None:
+    """Save raw plans before fold-specific normalization."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(plans_by_row),
+        encoding="utf-8",
+    )
+    print(f"Saved raw plans cache to: {path}")
+
+
+def load_plans_from_cache(
+        path: Path,
+        sql_rows: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Load raw plans and select/relabel rows for one fold split."""
+    cache_rows = json.loads(path.read_text(encoding="utf-8"))
+    cache_by_key: Dict[tuple[Any, Any, Any], Dict[str, Any]] = {}
+    for cached in cache_rows:
+        key = plan_cache_key(cached)
+        if key in cache_by_key:
+            raise ValueError(f"Duplicate plan cache key in {path}: {key}")
+        cache_by_key[key] = cached
+
+    selected = []
+    missing_keys = []
+    for row in sql_rows:
+        key = plan_cache_key(row)
+        cached = cache_by_key.get(key)
+        if cached is None:
+            missing_keys.append(key)
+            continue
+        selected.append({
+            **row,
+            "sql": row["sql_text"],
+            "plan": cached["plan"],
+        })
+
+    if missing_keys:
+        preview = ", ".join(str(key) for key in missing_keys[:5])
+        raise KeyError(
+            f"{len(missing_keys)} SQL rows were not found in plan cache {path}. "
+            f"First missing keys: {preview}"
+        )
+    return selected
 
 
 def load_database_info_from_dir(stats_dir: Path):
@@ -628,6 +704,12 @@ def main() -> None:
     args = parse_args()
     if args.min_candidates_per_query <= 0:
         raise ValueError("--min-candidates-per-query must be positive.")
+    if args.sql_file is None:
+        raise ValueError("--sql-file is required.")
+    if args.plans_cache_only and args.plans_cache_output is None:
+        raise ValueError("--plans-cache-only requires --plans-cache-output.")
+    if args.plans_cache_input is not None and args.plans_cache_output is not None:
+        raise ValueError("Use either --plans-cache-input or --plans-cache-output, not both.")
 
     stats_dir = Path(args.stats_dir).resolve()
     sql_file_path = Path(args.sql_file).resolve()
@@ -636,55 +718,75 @@ def main() -> None:
 
     print(f"Loaded {len(sql_rows)} SQL queries from {args.sql_file}")
     print(f"Database statistics dir: {stats_dir}")
-    print("Mode:",
-          "EXPLAIN ANALYZE, every SQL will be executed" if args.analyze else "EXPLAIN only, queries are planned but not executed")
+    if args.plans_cache_input is not None:
+        print("Mode: raw plan cache input, PostgreSQL will not be contacted")
+    else:
+        print(
+            "Mode:",
+            "EXPLAIN ANALYZE, every SQL will be executed"
+            if args.analyze
+            else "EXPLAIN only, queries are planned but not executed",
+        )
 
     plans_by_row: List[Dict[str, Any]] = []
     errors: List[Dict[str, Any]] = []
 
-    with open_connection(
-            dbname=args.dbname,
-            host=args.host,
-            port=str(args.port),
-            user=args.user,
-            password=args.password,
-    ) as conn:
-        with conn.cursor() as cur:
-            if args.statement_timeout_ms and args.statement_timeout_ms > 0:
-                cur.execute("SET statement_timeout = %s", (args.statement_timeout_ms,))
+    if args.plans_cache_input is not None:
+        cache_path = Path(args.plans_cache_input).resolve()
+        plans_by_row = load_plans_from_cache(cache_path, sql_rows)
+        print(f"Loaded {len(plans_by_row)} plans from cache: {cache_path}")
+    else:
+        with open_connection(
+                dbname=args.dbname,
+                host=args.host,
+                port=str(args.port),
+                user=args.user,
+                password=args.password,
+        ) as conn:
+            with conn.cursor() as cur:
+                if args.statement_timeout_ms and args.statement_timeout_ms > 0:
+                    cur.execute("SET statement_timeout = %s", (args.statement_timeout_ms,))
 
-            for item in tqdm(sql_rows, desc="Explaining SQLs", total=len(sql_rows)):
-                try:
-                    explain_doc = run_explain_json_with_cursor(
-                        cur=cur,
-                        sql=item["sql_text"],
-                        analyze=args.analyze,
-                    )
-                    plans_by_row.append({
-                        **item,
-                        "sql": item["sql_text"],
-                        "plan": explain_doc["Plan"],
-                    })
-                except Exception as exc:
-                    conn.rollback()
-                    error_obj = {
-                        "query_group_id": item["query_group_id"],
-                        "template_id": item["template_id"],
-                        "original_query_id": item["original_query_id"],
-                        "candidate_id": item["candidate_id"],
-                        "sql": item["sql_text"],
-                        "error": repr(exc),
-                    }
-                    if args.skip_errors:
-                        errors.append(error_obj)
-                        print(f"\nSkipped line {item['row_number']}: {exc}")
-                        continue
-                    raise RuntimeError(
-                        f"Failed on row {item['row_number']}: {item['sql_text']}\n{exc}"
-                    ) from exc
+                for item in tqdm(sql_rows, desc="Explaining SQLs", total=len(sql_rows)):
+                    try:
+                        explain_doc = run_explain_json_with_cursor(
+                            cur=cur,
+                            sql=item["sql_text"],
+                            analyze=args.analyze,
+                        )
+                        plans_by_row.append({
+                            **item,
+                            "sql": item["sql_text"],
+                            "plan": explain_doc["Plan"],
+                        })
+                    except Exception as exc:
+                        conn.rollback()
+                        error_obj = {
+                            "query_group_id": item["query_group_id"],
+                            "template_id": item["template_id"],
+                            "original_query_id": item["original_query_id"],
+                            "candidate_id": item["candidate_id"],
+                            "sql": item["sql_text"],
+                            "error": repr(exc),
+                        }
+                        if args.skip_errors:
+                            errors.append(error_obj)
+                            print(f"\nSkipped line {item['row_number']}: {exc}")
+                            continue
+                        raise RuntimeError(
+                            f"Failed on row {item['row_number']}: {item['sql_text']}\n{exc}"
+                        ) from exc
 
     if not plans_by_row:
         raise RuntimeError("No SQL plans were successfully collected.")
+    if args.plans_cache_output is not None:
+        save_plans_cache(Path(args.plans_cache_output).resolve(), plans_by_row)
+    if args.plans_cache_only:
+        if errors:
+            error_path = Path(args.plans_cache_output).resolve().with_suffix(".errors.json")
+            error_path.write_text(json.dumps(errors, indent=4), encoding="utf-8")
+            print(f"Saved skipped SQL errors to: {error_path}")
+        return
 
     if args.norm_stats:
         norm_stats = load_norm_stats_json(Path(args.norm_stats))
@@ -749,7 +851,7 @@ def main() -> None:
         out_path,
         records,
         norm_stats,
-        analyze=args.analyze,
+        analyze=args.analyze or args.plans_cache_input is not None,
         dbname=args.dbname,
         save_original_reqo_dataset=not args.no_save_original_reqo_dataset,
         reqo_dataset_dir=(

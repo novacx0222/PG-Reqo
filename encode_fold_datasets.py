@@ -52,6 +52,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--user", required=True)
     parser.add_argument("--password", default=None)
     parser.add_argument("--stats-dir", type=Path, required=True)
+    parser.add_argument(
+        "--plans-cache-input",
+        type=Path,
+        default=None,
+        help=(
+            "Raw EXPLAIN JSON cache for this source. When set, train/test "
+            "folds are encoded from the cache instead of running PostgreSQL again."
+        ),
+    )
     parser.add_argument("--statement-timeout-ms", type=int, default=0)
     parser.add_argument("--min-candidates-per-query", type=int, default=2)
     parser.add_argument("--skip-errors", action="store_true")
@@ -100,10 +109,13 @@ def build_common_encode_cmd(args: argparse.Namespace, sql_file: Path, output_dir
         str(args.stats_dir),
         "--output-dir",
         str(output_dir),
-        "--analyze",
         "--min-candidates-per-query",
         str(args.min_candidates_per_query),
     ]
+    if args.plans_cache_input is None:
+        cmd.append("--analyze")
+    else:
+        cmd.extend(["--plans-cache-input", str(args.plans_cache_input)])
     if args.password is not None:
         cmd.extend(["--password", args.password])
     if args.statement_timeout_ms > 0:
