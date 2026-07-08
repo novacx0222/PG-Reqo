@@ -651,7 +651,7 @@ def main() -> None:
     ) as conn:
         with conn.cursor() as cur:
             if args.statement_timeout_ms and args.statement_timeout_ms > 0:
-                cur.execute("SET statement_timeout = %s", args.statement_timeout_ms)
+                cur.execute("SET statement_timeout = %s", (args.statement_timeout_ms,))
 
             for item in tqdm(sql_rows, desc="Explaining SQLs", total=len(sql_rows)):
                 try:
