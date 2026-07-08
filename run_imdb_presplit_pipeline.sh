@@ -203,7 +203,7 @@ count_total_steps() {
     TOTAL_STEPS=$((TOTAL_STEPS + ( ${#GROUPS[@]} + 1 ) * FOLD_COUNT))
   fi
   if stage_enabled "summary"; then
-    TOTAL_STEPS=$((TOTAL_STEPS + ${#GROUPS[@]}))
+    TOTAL_STEPS=$((TOTAL_STEPS + ${#GROUPS[@]} + 1))
   fi
   if [[ "$TOTAL_STEPS" -eq 0 ]]; then
     echo "No stages selected." >&2
@@ -583,6 +583,25 @@ for group in "${GROUPS[@]}"; do
   )
   run_step "summary" "Summarize ${group}"
 done
+
+CMD=(
+  "$PYTHON" "${REPO_ROOT}/combine_group_summaries.py"
+  --summary-root "$SUMMARY_ROOT"
+  --groups "${GROUPS[@]}"
+  --output-dir "$SUMMARY_ROOT"
+)
+INPUTS=("${REPO_ROOT}/combine_group_summaries.py")
+for group in "${GROUPS[@]}"; do
+  INPUTS+=(
+    "${SUMMARY_ROOT}/${group}/fold_summary.csv"
+    "${SUMMARY_ROOT}/${group}/overall_summary.csv"
+  )
+done
+OUTPUTS=(
+  "${SUMMARY_ROOT}/combined_fold_summary.csv"
+  "${SUMMARY_ROOT}/combined_overall_summary.csv"
+)
+run_step "summary" "Combine all group summaries"
 
 echo
 echo "Pipeline finished."
