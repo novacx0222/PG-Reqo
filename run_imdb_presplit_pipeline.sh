@@ -26,7 +26,8 @@ DATABASE_STATISTICS_DIR="${STATS_DIR}"
 
 EXPERIMENT_ROOT="/data/robdp/imdb-presplit-0708"
 RUNNER_RESULTS_PATH="${EXPERIMENT_ROOT}/runner_outputs"
-ROBDP_RUNTIME_RESULTS_PATH="${EXPERIMENT_ROOT}/robdp_runtime_outputs"
+ROBDP_RUNTIME_RESULTS_PATH="${RUNNER_RESULTS_PATH}/robdp"
+ROBDP_LAST_LEVEL_RESULTS_PATH="${RUNNER_RESULTS_PATH}/robdp_last_level"
 HINT_SQL_CSV_DIR="${EXPERIMENT_ROOT}/hint-sql-csv"
 FOLDS_DIR="${EXPERIMENT_ROOT}/folds"
 FOLD_SQL_ROOT="${EXPERIMENT_ROOT}/fold_sql"
@@ -171,6 +172,7 @@ SQLs:             ${SQLS_DIR}
 Experiment root:  ${EXPERIMENT_ROOT}
 Runner results:   ${RUNNER_RESULTS_PATH}
 RobDP runtime:    ${ROBDP_RUNTIME_RESULTS_PATH}
+RobDP last-level: ${ROBDP_LAST_LEVEL_RESULTS_PATH}
 Hint SQL CSVs:    ${HINT_SQL_CSV_DIR}
 Folds:            ${FOLDS_DIR}
 Fold SQL:         ${FOLD_SQL_ROOT}
@@ -305,7 +307,7 @@ common_workload_args=(
 
 all_robdp_runner_dirs=()
 for group in "${GROUPS[@]}"; do
-  all_robdp_runner_dirs+=("${RUNNER_RESULTS_PATH}/$(parameter_dir "$group")")
+  all_robdp_runner_dirs+=("${ROBDP_LAST_LEVEL_RESULTS_PATH}/$(parameter_dir "$group")")
 done
 
 all_robdp_runtime_dirs=()
@@ -357,7 +359,17 @@ run_step "runner" "Run RobDP no-hint runtime"
 
 CMD=(
   "$PYTHON" "${REPO_ROOT}/run_imdb_with_robdp_hints.py"
-  "${common_workload_args[@]}"
+  --dbname "$DBNAME"
+  --host "$DB_HOST"
+  --port "$DB_PORT"
+  --user "$DB_USER"
+  --sqls-dir "$SQLS_DIR"
+  --workload-name "$WORKLOAD_NAME"
+  --skip-template-id-vals "${SKIP_TEMPLATE_IDS[@]}"
+  --query-id-limit "$QUERY_ID_LIMIT"
+  --results-path "$ROBDP_LAST_LEVEL_RESULTS_PATH"
+  --statement-timeout "$STATEMENT_TIMEOUT"
+  --rounds "$ROUNDS"
   --run-mode explain-json
   --main-objective-id-vals "${MAIN_OBJECTIVE_IDS[@]}"
   --retain-strategy-id-vals "${RETAIN_STRATEGY_IDS[@]}"
@@ -365,7 +377,7 @@ CMD=(
 )
 INPUTS=("${REPO_ROOT}/run_imdb_with_robdp_hints.py" "$SQLS_DIR")
 OUTPUTS=("${all_robdp_runner_dirs[@]}")
-run_step "runner" "Run RobDP last-level hint export and RobDP runtime"
+run_step "runner" "Run RobDP last-level hint export"
 
 CMD=(
   "$PYTHON" "${REPO_ROOT}/run_imdb_with_reqo_guc.py"
@@ -393,7 +405,7 @@ done
 
 CMD=(
   "$PYTHON" "${REPO_ROOT}/build_imdb_hint_sql_csv.py"
-  --results-path "$RUNNER_RESULTS_PATH"
+  --results-path "$ROBDP_LAST_LEVEL_RESULTS_PATH"
   --sqls-dir "$SQLS_DIR"
   --workload-name "$WORKLOAD_NAME"
   --output-dir "$HINT_SQL_CSV_DIR"
