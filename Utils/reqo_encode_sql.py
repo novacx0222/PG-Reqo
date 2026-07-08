@@ -143,6 +143,29 @@ def parse_args() -> argparse.Namespace:
         help="Output path. Format: *.pt and *.npy",
     )
     parser.add_argument(
+        "--reqo-dataset-dir",
+        default=None,
+        help=(
+            "Directory for original Reqo .npy dataset files. Default: "
+            "Data/<dbname>/datasets. Use fold-specific directories to avoid "
+            "overwriting other experiments."
+        ),
+    )
+    parser.add_argument(
+        "--no-save-original-reqo-dataset",
+        action="store_true",
+        help="Only save encode.pt and skip original Reqo .npy dataset files.",
+    )
+    parser.add_argument(
+        "--min-candidates-per-query",
+        type=int,
+        default=2,
+        help=(
+            "Minimum successful candidates required to keep a query group in "
+            "the original Reqo .npy dataset. Default: 2."
+        ),
+    )
+    parser.add_argument(
         "--norm-stats-output",
         default=None,
         help="Optional path to save global normalization stats computed from all SQL plans.",
@@ -379,6 +402,7 @@ def save_dataset(
         analyze: bool,
         dbname: str,
         save_original_reqo_dataset: bool = True,
+        reqo_dataset_dir: Path | None = None,
         min_candidates_per_query: int = 3,
 ) -> None:
     """
@@ -454,7 +478,10 @@ def save_dataset(
             "Please run encoding with --analyze."
         )
 
-    reqo_dataset_dir = (Path("Data") / dbname / "datasets").resolve()
+    if reqo_dataset_dir is None:
+        reqo_dataset_dir = (Path("Data") / dbname / "datasets").resolve()
+    else:
+        reqo_dataset_dir = reqo_dataset_dir.expanduser().resolve()
     reqo_dataset_dir.mkdir(parents=True, exist_ok=True)
 
     # Group records by query_group_id.
@@ -599,6 +626,8 @@ def save_dataset(
 
 def main() -> None:
     args = parse_args()
+    if args.min_candidates_per_query <= 0:
+        raise ValueError("--min-candidates-per-query must be positive.")
 
     stats_dir = Path(args.stats_dir).resolve()
     sql_file_path = Path(args.sql_file).resolve()
@@ -716,7 +745,20 @@ def main() -> None:
         raise RuntimeError("No SQL plans were successfully encoded.")
 
     out_path = Path(args.output_dir) / "encode.pt"
-    save_dataset(out_path, records, norm_stats, analyze=args.analyze, dbname=args.dbname)
+    save_dataset(
+        out_path,
+        records,
+        norm_stats,
+        analyze=args.analyze,
+        dbname=args.dbname,
+        save_original_reqo_dataset=not args.no_save_original_reqo_dataset,
+        reqo_dataset_dir=(
+            Path(args.reqo_dataset_dir)
+            if args.reqo_dataset_dir is not None
+            else None
+        ),
+        min_candidates_per_query=args.min_candidates_per_query,
+    )
 
     if errors:
         error_path = out_path.with_suffix(out_path.suffix + ".errors.json")

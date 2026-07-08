@@ -45,7 +45,7 @@ def add_hint_args(parser: argparse.ArgumentParser) -> None:
         "--final-level-path-limit",
         type=int,
         default=13,
-        help="RobDP final-level path limit used while exporting hints. Default: 1.",
+        help="RobDP final-level path limit used while exporting hints. Default: 13.",
     )
 
 

@@ -1,5 +1,6 @@
 import os
 import csv
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -356,9 +357,14 @@ def write_query_selection_details(
 
 
 def train(dbname, reqo_config, k_i, trainset, testset, save_path, query_plans_index_num_i, query_postgres_cost_i,
-          save_model, query_index_i=None, query_metadata_i=None, query_plans_index_i=None):
+          save_model, query_index_i=None, query_metadata_i=None, query_plans_index_i=None,
+          database_statistics_dir=None):
     batch_size = reqo_config["batch_size"]
-    table_columns_number = np.load(f'Data/{dbname}/database_statistics/table_columns_number.npy')
+    if database_statistics_dir is None:
+        database_statistics_dir = Path("Data") / dbname / "database_statistics"
+    else:
+        database_statistics_dir = Path(database_statistics_dir)
+    table_columns_number = np.load(database_statistics_dir / 'table_columns_number.npy')
 
     train_loader, max_sup_train_label, min_sup_train_label = load_dataset(trainset, batch_size, True)
     test_loader, max_sup_test_label, min_sup_test_label = load_dataset(testset, batch_size, False)
