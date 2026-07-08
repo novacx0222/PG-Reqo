@@ -297,7 +297,6 @@ common_workload_args=(
   --results-path "$RUNNER_RESULTS_PATH"
   --statement-timeout "$STATEMENT_TIMEOUT"
   --rounds "$ROUNDS"
-  --run-mode explain-analyze-json
 )
 
 all_robdp_runner_dirs=()
@@ -316,6 +315,7 @@ count_total_steps
 CMD=(
   "$PYTHON" "${REPO_ROOT}/run_imdb_with_pg.py"
   "${common_workload_args[@]}"
+  --run-mode explain-analyze-json
 )
 INPUTS=("${REPO_ROOT}/run_imdb_with_pg.py" "$SQLS_DIR")
 OUTPUTS=("${RUNNER_RESULTS_PATH}/original")
@@ -324,6 +324,7 @@ run_step "runner" "Run original PostgreSQL baseline"
 CMD=(
   "$PYTHON" "${REPO_ROOT}/run_imdb_with_robdp_hints.py"
   "${common_workload_args[@]}"
+  --run-mode explain-json
   --main-objective-id-vals "${MAIN_OBJECTIVE_IDS[@]}"
   --retain-strategy-id-vals "${RETAIN_STRATEGY_IDS[@]}"
   --final-level-path-limit "$FINAL_LEVEL_PATH_LIMIT"
@@ -335,6 +336,7 @@ run_step "runner" "Run RobDP last-level hint export and RobDP runtime"
 CMD=(
   "$PYTHON" "${REPO_ROOT}/run_imdb_with_reqo_guc.py"
   "${common_workload_args[@]}"
+  --run-mode explain-json
 )
 INPUTS=("${REPO_ROOT}/run_imdb_with_reqo_guc.py" "$SQLS_DIR")
 OUTPUTS=("${RUNNER_RESULTS_PATH}/reqo_guc")
@@ -460,6 +462,8 @@ for source_name in "${trainable_sources[@]}"; do
     INPUTS=(
       "${REPO_ROOT}/encode_fold_datasets.py"
       "${REPO_ROOT}/Utils/reqo_encode_sql.py"
+      "${REPO_ROOT}/Utils/reqo_encode_sql_save_pt.py"
+      "${REPO_ROOT}/Utils/reqo_pt_to_npy.py"
       "$STATS_DIR"
       "${FOLD_SQL_ROOT}/${source_name}/fold_${fold_id}/train.csv"
       "${FOLD_SQL_ROOT}/${source_name}/fold_${fold_id}/test.csv"

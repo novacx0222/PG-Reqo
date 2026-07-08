@@ -2,8 +2,10 @@
 
 For each source/fold, this script runs:
 
-  1. train.csv -> train/encode.pt and train Reqo .npy dataset
-  2. test.csv  -> test/encode.pt and test Reqo .npy dataset
+  1. train.csv -> train/encode.pt
+  2. train/encode.pt -> train Reqo .npy dataset
+  3. test.csv -> test/encode.pt, using train/norm_stats.json
+  4. test/encode.pt -> test Reqo .npy dataset
 
 The test encoder always uses train/norm_stats.json so train/test features live
 in the same normalized space.
@@ -80,11 +82,10 @@ def run_command(cmd: list[str], cwd: Path, dry_run: bool) -> None:
     subprocess.run(cmd, cwd=cwd, check=True)
 
 
-def build_common_encode_cmd(args: argparse.Namespace, sql_file: Path, output_dir: Path,
-                            dataset_dir: Path) -> list[str]:
+def build_common_encode_cmd(args: argparse.Namespace, sql_file: Path, output_dir: Path) -> list[str]:
     cmd = [
         sys.executable,
-        str(args.repo_root / "Utils" / "reqo_encode_sql.py"),
+        str(args.repo_root / "Utils" / "reqo_encode_sql_save_pt.py"),
         "--sql-file",
         str(sql_file),
         "--dbname",
@@ -99,8 +100,6 @@ def build_common_encode_cmd(args: argparse.Namespace, sql_file: Path, output_dir
         str(args.stats_dir),
         "--output-dir",
         str(output_dir),
-        "--reqo-dataset-dir",
-        str(dataset_dir),
         "--analyze",
         "--min-candidates-per-query",
         str(args.min_candidates_per_query),
@@ -112,6 +111,21 @@ def build_common_encode_cmd(args: argparse.Namespace, sql_file: Path, output_dir
     if args.skip_errors:
         cmd.append("--skip-errors")
     return cmd
+
+
+def build_convert_cmd(args: argparse.Namespace, pt_file: Path, dataset_dir: Path) -> list[str]:
+    return [
+        sys.executable,
+        str(args.repo_root / "Utils" / "reqo_pt_to_npy.py"),
+        "--pt-file",
+        str(pt_file),
+        "--dbname",
+        args.dbname,
+        "--output-dir",
+        str(dataset_dir),
+        "--min-candidates-per-query",
+        str(args.min_candidates_per_query),
+    ]
 
 
 def main() -> None:
@@ -153,20 +167,30 @@ def main() -> None:
         args=args,
         sql_file=train_csv,
         output_dir=train_encoding_dir,
-        dataset_dir=train_dataset_dir,
     )
     train_cmd.extend(["--norm-stats-output", str(norm_stats_path)])
+    train_convert_cmd = build_convert_cmd(
+        args=args,
+        pt_file=train_encoding_dir / "encode.pt",
+        dataset_dir=train_dataset_dir,
+    )
 
     test_cmd = build_common_encode_cmd(
         args=args,
         sql_file=test_csv,
         output_dir=test_encoding_dir,
-        dataset_dir=test_dataset_dir,
     )
     test_cmd.extend(["--norm-stats", str(norm_stats_path)])
+    test_convert_cmd = build_convert_cmd(
+        args=args,
+        pt_file=test_encoding_dir / "encode.pt",
+        dataset_dir=test_dataset_dir,
+    )
 
     run_command(train_cmd, cwd=repo_root, dry_run=args.dry_run)
+    run_command(train_convert_cmd, cwd=repo_root, dry_run=args.dry_run)
     run_command(test_cmd, cwd=repo_root, dry_run=args.dry_run)
+    run_command(test_convert_cmd, cwd=repo_root, dry_run=args.dry_run)
 
     print(f"Train encoding: {train_encoding_dir}")
     print(f"Test encoding: {test_encoding_dir}")

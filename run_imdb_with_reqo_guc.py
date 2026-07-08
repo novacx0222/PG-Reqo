@@ -86,11 +86,11 @@ def parse_args() -> argparse.Namespace:
             "export pg_hint_plan hints derived from EXPLAIN JSON."
         )
     )
-    parser.set_defaults(run_mode="explain-analyze-json")
+    parser.set_defaults(run_mode="explain-json")
     for action in parser._actions:
         if action.dest == "run_mode":
             action.help = (
-                "SQL execution mode. Default: explain-analyze-json. Choices: "
+                "SQL execution mode. Default: explain-json. Choices: "
                 "explain-json or explain-analyze-json."
             )
     return parser.parse_args()
