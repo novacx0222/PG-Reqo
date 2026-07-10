@@ -26,6 +26,8 @@ DATABASE_STATISTICS_DIR="${STATS_DIR}"
 
 EXPERIMENT_ROOT="/data/robdp/imdb-presplit-0708"
 RUNNER_RESULTS_PATH="${EXPERIMENT_ROOT}/runner_outputs"
+ORIGINAL_RESULTS_PATH="${RUNNER_RESULTS_PATH}/original"
+REQO_GUC_RESULTS_PATH="${RUNNER_RESULTS_PATH}/reqo_guc"
 ROBDP_RUNTIME_RESULTS_PATH="${RUNNER_RESULTS_PATH}/robdp"
 ROBDP_LAST_LEVEL_RESULTS_PATH="${RUNNER_RESULTS_PATH}/robdp_last_level"
 HINT_SQL_CSV_DIR="${EXPERIMENT_ROOT}/hint-sql-csv"
@@ -181,6 +183,8 @@ Database:         ${DBNAME}
 SQLs:             ${SQLS_DIR}
 Experiment root:  ${EXPERIMENT_ROOT}
 Runner results:   ${RUNNER_RESULTS_PATH}
+Original results: ${ORIGINAL_RESULTS_PATH}
+Reqo-GUC results: ${REQO_GUC_RESULTS_PATH}
 RobDP runtime:    ${ROBDP_RUNTIME_RESULTS_PATH}
 RobDP last-level: ${ROBDP_LAST_LEVEL_RESULTS_PATH}
 Hint SQL CSVs:    ${HINT_SQL_CSV_DIR}
@@ -310,7 +314,6 @@ common_workload_args=(
   --workload-name "$WORKLOAD_NAME"
   --skip-template-id-vals "${SKIP_TEMPLATE_IDS[@]}"
   --query-id-limit "$QUERY_ID_LIMIT"
-  --results-path "$RUNNER_RESULTS_PATH"
   --statement-timeout "$STATEMENT_TIMEOUT"
   --rounds "$ROUNDS"
 )
@@ -336,10 +339,11 @@ count_total_steps
 CMD=(
   "$PYTHON" "${REPO_ROOT}/run_imdb_with_pg.py"
   "${common_workload_args[@]}"
+  --results-path "$ORIGINAL_RESULTS_PATH"
   --run-mode explain-analyze-json
 )
 INPUTS=("${REPO_ROOT}/run_imdb_with_pg.py" "$SQLS_DIR")
-OUTPUTS=("${RUNNER_RESULTS_PATH}/original")
+OUTPUTS=("$ORIGINAL_RESULTS_PATH")
 run_step "runner" "Run original PostgreSQL baseline"
 
 robdp_runtime_workload_args=(
@@ -392,10 +396,11 @@ run_step "runner" "Run RobDP last-level hint export"
 CMD=(
   "$PYTHON" "${REPO_ROOT}/run_imdb_with_reqo_guc.py"
   "${common_workload_args[@]}"
+  --results-path "$REQO_GUC_RESULTS_PATH"
   --run-mode explain-json
 )
 INPUTS=("${REPO_ROOT}/run_imdb_with_reqo_guc.py" "$SQLS_DIR")
-OUTPUTS=("${RUNNER_RESULTS_PATH}/reqo_guc")
+OUTPUTS=("$REQO_GUC_RESULTS_PATH")
 run_step "runner" "Run Reqo-GUC candidates and raw Reqo-GUC runtime"
 
 

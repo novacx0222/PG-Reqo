@@ -267,6 +267,7 @@ def load_plans_from_cache(
             missing_keys.append(key)
             continue
         selected.append({
+            **cached,
             **row,
             "sql": row["sql_text"],
             "plan": cached["plan"],
@@ -344,6 +345,37 @@ def run_explain_json_with_cursor(
     if not isinstance(raw, list) or not raw:
         raise ValueError(f"Unexpected EXPLAIN JSON result: {type(raw)}")
     return raw[0]
+
+
+def is_statement_timeout(exc: Exception) -> bool:
+    """Return true for PostgreSQL statement_timeout cancellations."""
+    return (
+        isinstance(exc, psycopg2.errors.QueryCanceled)
+        or getattr(exc, "pgcode", None) == "57014"
+        or "statement timeout" in str(exc).lower()
+    )
+
+
+def collect_timeout_fallback_plan(
+        cur,
+        sql: str,
+        timeout_ms: int,
+) -> Dict[str, Any]:
+    """Collect a plan shape after EXPLAIN ANALYZE timed out.
+
+    The timed-out execution is assigned the configured timeout as its runtime
+    label. We then run plain EXPLAIN to keep the plan graph available for Reqo
+    features without executing the query a second time.
+    """
+    cur.execute("SET statement_timeout = 0")
+    explain_doc = run_explain_json_with_cursor(
+        cur=cur,
+        sql=sql,
+        analyze=False,
+    )
+    if timeout_ms > 0:
+        cur.execute("SET statement_timeout = %s", (timeout_ms,))
+    return explain_doc
 
 
 def visit_plan_nodes(plan: Dict[str, Any], out: List[Dict[str, Any]]) -> None:
@@ -761,6 +793,34 @@ def main() -> None:
                         })
                     except Exception as exc:
                         conn.rollback()
+                        if (
+                                args.analyze
+                                and args.statement_timeout_ms
+                                and args.statement_timeout_ms > 0
+                                and is_statement_timeout(exc)
+                        ):
+                            try:
+                                explain_doc = collect_timeout_fallback_plan(
+                                    cur=cur,
+                                    sql=item["sql_text"],
+                                    timeout_ms=args.statement_timeout_ms,
+                                )
+                                plans_by_row.append({
+                                    **item,
+                                    "sql": item["sql_text"],
+                                    "plan": explain_doc["Plan"],
+                                    "timeout_runtime_ms": args.statement_timeout_ms,
+                                    "timed_out": True,
+                                    "timeout_error": repr(exc),
+                                })
+                                print(
+                                    "\nStatement timed out; using timeout as "
+                                    f"runtime for line {item['row_number']}."
+                                )
+                                continue
+                            except Exception as fallback_exc:
+                                conn.rollback()
+                                exc = fallback_exc
                         error_obj = {
                             "query_group_id": item["query_group_id"],
                             "template_id": item["template_id"],
@@ -814,6 +874,12 @@ def main() -> None:
             metadata["template_id"] = item["template_id"]
             metadata["original_query_id"] = item["original_query_id"]
             metadata["candidate_id"] = item["candidate_id"]
+            if "timeout_runtime_ms" in item:
+                # Timeout rows keep their plan shape but use the configured
+                # statement_timeout as the supervised runtime label.
+                metadata["root_actual_total_time_ms"] = float(item["timeout_runtime_ms"])
+                metadata["timed_out"] = bool(item.get("timed_out", True))
+                metadata["timeout_error"] = item.get("timeout_error")
 
             records.append({
                 "query_group_id": item["query_group_id"],

@@ -46,9 +46,9 @@ def build_results_filename(
         round_number: int,
 ) -> Path:
     """Build the baseline result filename for one query execution."""
+    # The caller passes the concrete output root, e.g. runner_outputs/original.
     query_output_dir = (
             results_path.expanduser().resolve()
-            / "original"
             / str(template_id)
             / str(query_id)
     )

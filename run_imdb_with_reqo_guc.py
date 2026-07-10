@@ -119,9 +119,9 @@ def build_query_output_dir(
         query_id: int,
 ) -> Path:
     """Build the output directory for one template/query pair."""
+    # The caller passes the concrete output root, e.g. runner_outputs/reqo_guc.
     query_output_dir = (
         results_path.expanduser().resolve()
-        / "reqo_guc"
         / str(template_id)
         / str(query_id)
     )
