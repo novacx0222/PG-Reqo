@@ -21,6 +21,8 @@ SHARED_COLUMNS = [
     "reqo_guc_oracle_avg_ms",
     "reqo_guc_min_cost_avg_ms",
     "reqo_guc_reqo_avg_ms",
+    "original_planning_avg_ms",
+    "reqo_guc_runner_planning_avg_ms",
     "reqo_guc_runner_vs_original_avg_ratio",
     "reqo_guc_reqo_vs_min_cost_avg_ratio",
     "reqo_guc_reqo_vs_oracle_avg_ratio",
@@ -28,6 +30,7 @@ SHARED_COLUMNS = [
 
 ROBDP_GROUP_COLUMNS = [
     "robdp_avg_ms",
+    "robdp_planning_avg_ms",
     "robdp_last_level_oracle_avg_ms",
     "robdp_last_level_min_cost_avg_ms",
     "robdp_last_level_reqo_avg_ms",

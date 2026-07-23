@@ -208,7 +208,7 @@ def parse_result_blocks(text: str) -> list[dict[str, Any]]:
             flush()
             continue
         header_match = re.match(r"^([^:]+):\s*(.*)$", stripped)
-        if header_match and not current_payload:
+        if header_match and not current_payload and not stripped.startswith(("[", "{")):
             current_headers[header_match.group(1)] = header_match.group(2)
         else:
             current_payload.append(line)
@@ -238,11 +238,17 @@ def parse_explain_payload(payload: str) -> dict[str, Any] | None:
     return None
 
 
-def extract_execution_time_ms(payload: str) -> float | None:
+def extract_explain_times_ms(payload: str) -> dict[str, float | None]:
     explain_doc = parse_explain_payload(payload)
     if explain_doc is None:
-        return None
-    return as_float_or_none(explain_doc.get("Execution Time"))
+        return {
+            "execution_time_ms": None,
+            "planning_time_ms": None,
+        }
+    return {
+        "execution_time_ms": as_float_or_none(explain_doc.get("Execution Time")),
+        "planning_time_ms": as_float_or_none(explain_doc.get("Planning Time")),
+    }
 
 
 def load_runner_runtime(
@@ -257,6 +263,8 @@ def load_runner_runtime(
     failed_blocks = 0
     total_blocks = 0
     missing_execution_time = 0
+    missing_planning_time = 0
+    planning_times: list[float] = []
 
     for result_file in files:
         with result_file.open("r", encoding="utf-8") as file:
@@ -267,19 +275,27 @@ def load_runner_runtime(
                     failed_blocks += 1
                     total_blocks += 1
                     continue
-                runtime = extract_execution_time_ms(payload)
+                times = extract_explain_times_ms(payload)
+                runtime = times["execution_time_ms"]
+                planning_time = times["planning_time_ms"]
                 total_blocks += 1
                 if runtime is None:
                     missing_execution_time += 1
                 else:
                     runtimes.append(runtime)
+                if planning_time is None:
+                    missing_planning_time += 1
+                else:
+                    planning_times.append(planning_time)
 
     return {
         "runtime_ms": aggregate(runtimes, agg_method),
+        "planning_time_ms": aggregate(planning_times, agg_method),
         "rounds_ok": len(runtimes),
         "rounds_total": total_blocks,
         "failed_blocks": failed_blocks,
         "missing_execution_time_blocks": missing_execution_time,
+        "missing_planning_time_blocks": missing_planning_time,
         "status": "ok" if runtimes and len(runtimes) == total_blocks else (
             "missing" if not files else "partial_or_error"
         ),
@@ -356,27 +372,54 @@ def build_fold_query_summary(
         )
 
         original_runtime = original_row.get("runtime_ms")
+        original_planning_time = original_row.get("planning_time_ms")
         robdp_runtime = robdp_row.get("runtime_ms")
+        robdp_planning_time = robdp_row.get("planning_time_ms")
         reqo_guc_runner_runtime = reqo_guc_runner_row.get("runtime_ms")
+        reqo_guc_runner_planning_time = reqo_guc_runner_row.get("planning_time_ms")
 
         rows.append({
             **fold_row,
             "original_runtime_ms": original_runtime if original_runtime is not None else "",
+            "original_planning_time_ms": (
+                original_planning_time
+                if original_planning_time is not None
+                else ""
+            ),
             "original_rounds_ok": original_row.get("rounds_ok", 0),
             "original_rounds_total": original_row.get("rounds_total", 0),
+            "original_missing_planning_time_blocks": (
+                original_row.get("missing_planning_time_blocks", 0)
+            ),
             "original_status": original_row.get("status", ""),
             "robdp_runtime_ms": robdp_runtime if robdp_runtime is not None else "",
+            "robdp_planning_time_ms": (
+                robdp_planning_time
+                if robdp_planning_time is not None
+                else ""
+            ),
             "robdp_rounds_ok": robdp_row.get("rounds_ok", 0),
             "robdp_rounds_total": robdp_row.get("rounds_total", 0),
+            "robdp_missing_planning_time_blocks": (
+                robdp_row.get("missing_planning_time_blocks", 0)
+            ),
             "robdp_status": robdp_row.get("status", ""),
             "reqo_guc_runner_runtime_ms": (
                 reqo_guc_runner_runtime
                 if reqo_guc_runner_runtime is not None
                 else ""
             ),
+            "reqo_guc_runner_planning_time_ms": (
+                reqo_guc_runner_planning_time
+                if reqo_guc_runner_planning_time is not None
+                else ""
+            ),
             "reqo_guc_runner_rounds_ok": reqo_guc_runner_row.get("rounds_ok", 0),
             "reqo_guc_runner_rounds_total": reqo_guc_runner_row.get("rounds_total", 0),
             "reqo_guc_runner_failed_blocks": reqo_guc_runner_row.get("failed_blocks", 0),
+            "reqo_guc_runner_missing_planning_time_blocks": (
+                reqo_guc_runner_row.get("missing_planning_time_blocks", 0)
+            ),
             "reqo_guc_runner_status": reqo_guc_runner_row.get("status", ""),
             "robdp_vs_original_ratio": ratio_or_blank(robdp_runtime, original_runtime),
             "reqo_guc_runner_vs_original_ratio": ratio_or_blank(
@@ -405,11 +448,18 @@ RUNTIME_COLUMNS = [
     "reqo_guc_oracle_runtime_ms",
     "reqo_guc_min_cost_runtime_ms",
     "reqo_guc_reqo_runtime_ms",
+    "original_planning_time_ms",
+    "robdp_planning_time_ms",
+    "reqo_guc_runner_planning_time_ms",
 ]
 
 
 def avg_column_name(runtime_column: str) -> str:
-    return runtime_column[:-len("_runtime_ms")] + "_avg_ms"
+    if runtime_column.endswith("_runtime_ms"):
+        return runtime_column[:-len("_runtime_ms")] + "_avg_ms"
+    if runtime_column.endswith("_planning_time_ms"):
+        return runtime_column[:-len("_planning_time_ms")] + "_planning_avg_ms"
+    raise ValueError(f"Unsupported timing column name: {runtime_column}")
 
 
 def build_group_summary(rows: list[dict[str, Any]], group_name: str) -> list[dict[str, Any]]:
@@ -486,17 +536,23 @@ FOLD_QUERY_FIELDS = [
     "original_query_id",
     "candidate_count",
     "original_runtime_ms",
+    "original_planning_time_ms",
     "original_rounds_ok",
     "original_rounds_total",
+    "original_missing_planning_time_blocks",
     "original_status",
     "robdp_runtime_ms",
+    "robdp_planning_time_ms",
     "robdp_rounds_ok",
     "robdp_rounds_total",
+    "robdp_missing_planning_time_blocks",
     "robdp_status",
     "reqo_guc_runner_runtime_ms",
+    "reqo_guc_runner_planning_time_ms",
     "reqo_guc_runner_rounds_ok",
     "reqo_guc_runner_rounds_total",
     "reqo_guc_runner_failed_blocks",
+    "reqo_guc_runner_missing_planning_time_blocks",
     "reqo_guc_runner_status",
     "robdp_vs_original_ratio",
     "reqo_guc_runner_vs_original_ratio",
@@ -529,6 +585,9 @@ SUMMARY_FIELDS = [
     "reqo_guc_oracle_avg_ms",
     "reqo_guc_min_cost_avg_ms",
     "reqo_guc_reqo_avg_ms",
+    "original_planning_avg_ms",
+    "robdp_planning_avg_ms",
+    "reqo_guc_runner_planning_avg_ms",
     "robdp_vs_original_avg_ratio",
     "reqo_guc_runner_vs_original_avg_ratio",
     "robdp_last_level_reqo_vs_min_cost_avg_ratio",
