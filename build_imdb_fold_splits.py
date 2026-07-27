@@ -1,7 +1,8 @@
 """Build shared IMDb folds for multiple hint-candidate sources.
 
-This script splits query groups by (template_id, original_query_id), then
-writes:
+By default this script splits query groups by (template_id, original_query_id).
+With --split-granularity template, it splits by template_id and keeps every
+query from the same template in the same fold. It writes:
 
   - folds/<source>_fold_<k>.csv
   - fold_sql/<source>/fold_<k>/train.csv
@@ -74,6 +75,16 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=0,
         help="Random seed used before assigning queries to folds. Default: 0.",
+    )
+    parser.add_argument(
+        "--split-granularity",
+        choices=("query", "template"),
+        default="query",
+        help=(
+            "Split unit. 'query' assigns each (template_id, original_query_id) "
+            "independently. 'template' assigns whole template_id groups to "
+            "folds. Default: query."
+        ),
     )
     parser.add_argument(
         "--baseline-source",
@@ -197,6 +208,53 @@ def assign_test_folds(
     return assignments
 
 
+def assign_template_test_folds(
+        keys: list[tuple[int, int]],
+        fold_count: int,
+        split_seed: int,
+) -> dict[tuple[int, int], int]:
+    if fold_count <= 1:
+        raise ValueError("--fold must be greater than 1.")
+
+    template_ids = sorted({template_id for template_id, _ in keys})
+    if fold_count > len(template_ids):
+        raise ValueError(
+            f"--fold={fold_count} is larger than template count {len(template_ids)}."
+        )
+
+    shuffled_templates = list(template_ids)
+    random.Random(split_seed).shuffle(shuffled_templates)
+    template_assignments = {
+        template_id: idx % fold_count + 1
+        for idx, template_id in enumerate(shuffled_templates)
+    }
+    return {
+        key: template_assignments[key[0]]
+        for key in keys
+    }
+
+
+def build_test_fold_assignments(
+        keys: list[tuple[int, int]],
+        fold_count: int,
+        split_seed: int,
+        split_granularity: str,
+) -> dict[tuple[int, int], int]:
+    if split_granularity == "query":
+        return assign_test_folds(
+            keys=keys,
+            fold_count=fold_count,
+            split_seed=split_seed,
+        )
+    if split_granularity == "template":
+        return assign_template_test_folds(
+            keys=keys,
+            fold_count=fold_count,
+            split_seed=split_seed,
+        )
+    raise ValueError(f"Unknown split granularity: {split_granularity}")
+
+
 def write_fold_membership_csv(
         output_csv: Path,
         fold_id: int,
@@ -268,10 +326,11 @@ def main() -> None:
     }
 
     canonical_keys = build_canonical_keys(source_rows, args.key_policy)
-    test_assignments = assign_test_folds(
+    test_assignments = build_test_fold_assignments(
         keys=canonical_keys,
         fold_count=args.fold,
         split_seed=args.split_seed,
+        split_granularity=args.split_granularity,
     )
 
     output_root = args.output_root.expanduser().resolve()
@@ -279,8 +338,10 @@ def main() -> None:
     fold_sql_dir = output_root / "fold_sql"
 
     print(f"Canonical query keys: {len(canonical_keys)}")
+    print(f"Canonical templates: {len({template_id for template_id, _ in canonical_keys})}")
     print(f"Folds: {args.fold}")
     print(f"Key policy: {args.key_policy}")
+    print(f"Split granularity: {args.split_granularity}")
 
     baseline_sources = [
         sanitize_source_name(source_name)
