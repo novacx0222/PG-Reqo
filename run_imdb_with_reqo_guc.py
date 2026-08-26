@@ -18,7 +18,7 @@ from imdb_workload_common import (
     build_executable_sql,
     create_argument_parser,
     format_query_results,
-    load_sql_groups,
+    load_sql_groups_from_args,
     open_connection,
     print_sql_group_statistics,
     save_query_results,
@@ -376,12 +376,7 @@ def main() -> None:
     validate_args(args)
 
     base_guc_dict = generate_base_guc_dict(args)
-    sql_groups = load_sql_groups(
-        sqls_dir=args.sqls_dir,
-        workload_name=args.workload_name,
-        skip_template_id_vals=args.skip_template_id_vals,
-        query_id_limit=args.query_id_limit,
-    )
+    sql_groups = load_sql_groups_from_args(args)
     print_sql_group_statistics(sql_groups, args.workload_name)
     run_workload(
         args=args,

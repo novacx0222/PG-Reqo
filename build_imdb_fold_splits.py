@@ -22,6 +22,8 @@ from collections import OrderedDict
 from pathlib import Path
 from typing import Any
 
+from imdb_workload_common import load_sql_groups
+
 
 SQL_FIELDNAMES = [
     "query_group_id",
@@ -50,13 +52,41 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--source-csv",
         action="append",
-        required=True,
+        default=[],
         metavar="SOURCE=CSV",
         help=(
             "Candidate source and SQL CSV path. Repeat for sources such as "
             "robdp_last_level_8x1__0x0=/path/8x1__0x0.csv and "
-            "reqo_guc=/path/reqo_guc.csv."
+            "reqo_guc=/path/reqo_guc.csv. If omitted, folds are built from "
+            "the original SQL workload only."
         ),
+    )
+    parser.add_argument(
+        "--sqls-dir",
+        type=Path,
+        default=None,
+        help=(
+            "Directory containing {template_id}-0_{workload_name} SQLs. "
+            "Required when --source-csv is omitted."
+        ),
+    )
+    parser.add_argument(
+        "--workload-name",
+        default=None,
+        help="Workload name used with --sqls-dir when --source-csv is omitted.",
+    )
+    parser.add_argument(
+        "--skip-template-id-vals",
+        type=int,
+        nargs="+",
+        default=[],
+        help="Template IDs to skip when --source-csv is omitted. Default: none.",
+    )
+    parser.add_argument(
+        "--query-id-limit",
+        type=int,
+        default=None,
+        help="Keep original SQL query IDs in [0, limit). Default: keep all.",
     )
     parser.add_argument(
         "--output-root",
@@ -84,6 +114,15 @@ def parse_args() -> argparse.Namespace:
             "Split unit. 'query' assigns each (template_id, original_query_id) "
             "independently. 'template' assigns whole template_id groups to "
             "folds. Default: query."
+        ),
+    )
+    parser.add_argument(
+        "--warn-if-not-query-granularity",
+        action="store_true",
+        help=(
+            "Print a warning when --split-granularity is not query. This is "
+            "useful for separate-error-profile experiments, where query-level "
+            "folds avoid holding out whole templates from profile generation."
         ),
     )
     parser.add_argument(
@@ -186,6 +225,29 @@ def build_canonical_keys(
     if not keys:
         raise ValueError("No canonical query keys remain after applying key policy.")
     return sorted(keys)
+
+
+def build_canonical_keys_from_sql_workload(
+        sqls_dir: Path,
+        workload_name: str,
+        skip_template_id_vals: list[int],
+        query_id_limit: int | None,
+) -> list[tuple[int, int]]:
+    """Build fold keys directly from original IMDb SQL files."""
+    sql_groups = load_sql_groups(
+        sqls_dir=sqls_dir,
+        workload_name=workload_name,
+        skip_template_id_vals=skip_template_id_vals,
+        query_id_limit=query_id_limit,
+    )
+    keys = [
+        (template_id, original_query_id)
+        for template_id in sorted(sql_groups)
+        for original_query_id in sorted(sql_groups[template_id])
+    ]
+    if not keys:
+        raise ValueError("No SQL query keys were loaded from the workload.")
+    return keys
 
 
 def assign_test_folds(
@@ -318,14 +380,38 @@ def main() -> None:
     args = parse_args()
     if args.min_candidates_per_query <= 0:
         raise ValueError("--min-candidates-per-query must be positive.")
+    if args.query_id_limit is not None and args.query_id_limit < 0:
+        raise ValueError("--query-id-limit must be non-negative.")
+    if args.warn_if_not_query_granularity and args.split_granularity != "query":
+        print(
+            "WARNING: separate-error-profile experiments should normally use "
+            "--split-granularity query so every fold profile still sees all "
+            "templates through its train split."
+        )
 
     source_specs = [parse_source_csv_arg(value) for value in args.source_csv]
-    source_rows = {
-        source_name: load_source_rows(csv_path, args.min_candidates_per_query)
-        for source_name, csv_path in source_specs
-    }
+    if source_specs:
+        source_rows = {
+            source_name: load_source_rows(csv_path, args.min_candidates_per_query)
+            for source_name, csv_path in source_specs
+        }
+        canonical_keys = build_canonical_keys(source_rows, args.key_policy)
+    else:
+        if args.sqls_dir is None or args.workload_name is None:
+            raise ValueError(
+                "--sqls-dir and --workload-name are required when "
+                "--source-csv is omitted."
+            )
+        source_rows = {}
+        canonical_keys = build_canonical_keys_from_sql_workload(
+            sqls_dir=args.sqls_dir,
+            workload_name=args.workload_name,
+            skip_template_id_vals=args.skip_template_id_vals,
+            query_id_limit=args.query_id_limit,
+        )
+        if args.key_policy != "intersection":
+            print("WARNING: --key-policy is ignored without --source-csv.")
 
-    canonical_keys = build_canonical_keys(source_rows, args.key_policy)
     test_assignments = build_test_fold_assignments(
         keys=canonical_keys,
         fold_count=args.fold,
@@ -399,7 +485,10 @@ def main() -> None:
             )
 
     print(f"Fold membership CSVs: {folds_dir}")
-    print(f"Fold SQL CSVs: {fold_sql_dir}")
+    if source_names:
+        print(f"Fold SQL CSVs: {fold_sql_dir}")
+    else:
+        print("Fold SQL CSVs: not written because no --source-csv was provided.")
 
 
 if __name__ == "__main__":

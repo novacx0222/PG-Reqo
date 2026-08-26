@@ -7,6 +7,7 @@ individual runner.
 """
 
 import argparse
+import csv
 import json
 import re
 from pathlib import Path
@@ -15,6 +16,7 @@ from typing import Any
 # SQLs are grouped as: template_id -> query_id -> SQL string.
 SQLGroups = dict[int, dict[int, str]]
 GUCDict = dict[str, str | int | float]
+QueryKey = tuple[int, int]
 
 RUN_MODE_PREFIXES = {
     "none": "",
@@ -73,6 +75,35 @@ def create_argument_parser(description: str) -> argparse.ArgumentParser:
         help="Keep query IDs in [0, limit). Default: keep all queries.",
     )
     parser.add_argument(
+        "--folds-dir",
+        type=Path,
+        default=None,
+        help=(
+            "Optional folds directory containing <fold-source>_fold_<fold-id>.csv. "
+            "When set with --fold-id, only the selected fold split is loaded."
+        ),
+    )
+    parser.add_argument(
+        "--fold-source",
+        default="original",
+        help="Fold membership source prefix. Default: original.",
+    )
+    parser.add_argument(
+        "--fold-id",
+        type=int,
+        default=None,
+        help="Optional fold id to load from --folds-dir.",
+    )
+    parser.add_argument(
+        "--fold-split",
+        choices=("train", "test", "all"),
+        default="test",
+        help=(
+            "Fold split to load when --fold-id is set. Use all to load train "
+            "and test rows for that fold. Default: test."
+        ),
+    )
+    parser.add_argument(
         "--rounds",
         type=int,
         default=3,
@@ -97,6 +128,59 @@ def validate_common_args(args: argparse.Namespace) -> None:
         raise ValueError("--rounds must be positive.")
     if args.query_id_limit is not None and args.query_id_limit < 0:
         raise ValueError("--query-id-limit must be non-negative.")
+    if (args.folds_dir is None) != (args.fold_id is None):
+        raise ValueError("--folds-dir and --fold-id must be used together.")
+    if args.fold_id is not None and args.fold_id <= 0:
+        raise ValueError("--fold-id must be positive.")
+
+
+def csv_int(value: Any, column_name: str, csv_path: Path) -> int:
+    """Parse integer-ish CSV values while keeping error messages useful."""
+    try:
+        return int(float(str(value)))
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            f"Invalid integer value for {column_name!r} in {csv_path}: {value!r}"
+        ) from exc
+
+
+def load_fold_query_keys(
+        folds_dir: Path,
+        fold_source: str,
+        fold_id: int,
+        fold_split: str,
+) -> set[QueryKey]:
+    """Load selected (template_id, original_query_id) keys from a fold CSV."""
+    fold_csv = (
+        folds_dir.expanduser().resolve()
+        / f"{fold_source}_fold_{fold_id}.csv"
+    )
+    if not fold_csv.is_file():
+        raise ValueError(f"Fold membership CSV does not exist: {fold_csv}")
+
+    selected_keys: set[QueryKey] = set()
+    with fold_csv.open("r", encoding="utf-8", newline="") as file:
+        reader = csv.DictReader(file)
+        required_columns = {"split", "template_id", "original_query_id"}
+        missing_columns = sorted(required_columns - set(reader.fieldnames or []))
+        if missing_columns:
+            raise ValueError(
+                f"{fold_csv} is missing required columns: {missing_columns}"
+            )
+
+        for row in reader:
+            if fold_split != "all" and row["split"] != fold_split:
+                continue
+            selected_keys.add((
+                csv_int(row["template_id"], "template_id", fold_csv),
+                csv_int(row["original_query_id"], "original_query_id", fold_csv),
+            ))
+
+    if not selected_keys:
+        raise ValueError(
+            f"No query keys selected from {fold_csv} for split={fold_split!r}."
+        )
+    return selected_keys
 
 
 def load_sql_groups(
@@ -104,6 +188,7 @@ def load_sql_groups(
         workload_name: str,
         skip_template_id_vals: list[int],
         query_id_limit: int | None,
+        query_filter_keys: set[QueryKey] | None = None,
 ) -> SQLGroups:
     """Load SQLs as template_id -> query_id -> SQL string."""
     if not sqls_dir.is_dir():
@@ -170,6 +255,11 @@ def load_sql_groups(
             query_id = int(match.group("query_id"))
             if query_id_limit is not None and query_id >= query_id_limit:
                 continue
+            if (
+                    query_filter_keys is not None
+                    and (template_id, query_id) not in query_filter_keys
+            ):
+                continue
 
             # Handle SQL strings that were escaped more than once before loading.
             sql_by_query_id[query_id] = (
@@ -178,9 +268,37 @@ def load_sql_groups(
                 .replace("\\n", "\n")
             )
 
-        sql_groups[template_id] = dict(sorted(sql_by_query_id.items()))
+        if sql_by_query_id or query_filter_keys is None:
+            sql_groups[template_id] = dict(sorted(sql_by_query_id.items()))
 
     return sql_groups
+
+
+def load_sql_groups_from_args(args: argparse.Namespace) -> SQLGroups:
+    """Load SQL groups, optionally restricted by the selected fold split."""
+    query_filter_keys: set[QueryKey] | None = None
+    if args.fold_id is not None:
+        query_filter_keys = load_fold_query_keys(
+            folds_dir=args.folds_dir,
+            fold_source=args.fold_source,
+            fold_id=args.fold_id,
+            fold_split=args.fold_split,
+        )
+        print(
+            "Fold filter: "
+            f"source={args.fold_source}, "
+            f"fold={args.fold_id}, "
+            f"split={args.fold_split}, "
+            f"query_keys={len(query_filter_keys)}"
+        )
+
+    return load_sql_groups(
+        sqls_dir=args.sqls_dir,
+        workload_name=args.workload_name,
+        skip_template_id_vals=args.skip_template_id_vals,
+        query_id_limit=args.query_id_limit,
+        query_filter_keys=query_filter_keys,
+    )
 
 
 def print_sql_group_statistics(

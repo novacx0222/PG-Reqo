@@ -15,7 +15,7 @@ from imdb_workload_common import (
     SQLGroups,
     create_argument_parser,
     execute_query,
-    load_sql_groups,
+    load_sql_groups_from_args,
     open_connection,
     print_sql_group_statistics,
     save_query_results,
@@ -100,6 +100,15 @@ def parse_args(
         help="Error-sample KDE bandwidth. Default: 0.1.",
     )
     parser.add_argument(
+        "--error-profile-root",
+        type=Path,
+        default=None,
+        help=(
+            "Optional root for template-specific error_profile directories. "
+            "Default: use --sqls-dir."
+        ),
+    )
+    parser.add_argument(
         "--main-objective-id-vals",
         type=int,
         nargs="+",
@@ -146,10 +155,12 @@ def build_error_profile_path(
         sqls_dir: Path,
         template_id: int,
         workload_name: str,
+        error_profile_root: Path | None = None,
 ) -> Path:
     """Build the absolute error-profile directory for one template."""
+    profile_root = error_profile_root if error_profile_root is not None else sqls_dir
     return (
-            sqls_dir.expanduser().resolve()
+            profile_root.expanduser().resolve()
             / f"{template_id}-0_{workload_name}"
             / "error_profile"
     )
@@ -217,6 +228,7 @@ def run_single_sql(
             f"Parameter group: {build_parameter_group_path(additional_guc_dict)}",
             f"Run mode: {run_mode}",
             f"Additional GUCs: {additional_guc_dict}",
+            f"Error profile path: {error_profile_path}",
         ],
         result_text=result_text,
     )
@@ -253,6 +265,7 @@ def run_workload(
                         sqls_dir=args.sqls_dir,
                         template_id=template_id,
                         workload_name=args.workload_name,
+                        error_profile_root=args.error_profile_root,
                     )
                     for query_id in sorted(sql_by_query_id):
                         sql_string = sql_by_query_id[query_id]
@@ -302,12 +315,7 @@ def main() -> None:
         retain_strategy_id_vals=args.retain_strategy_id_vals,
         path_limit=args.path_limit,
     )
-    sql_groups = load_sql_groups(
-        sqls_dir=args.sqls_dir,
-        workload_name=args.workload_name,
-        skip_template_id_vals=args.skip_template_id_vals,
-        query_id_limit=args.query_id_limit,
-    )
+    sql_groups = load_sql_groups_from_args(args)
     print_sql_group_statistics(sql_groups, args.workload_name)
     run_workload(
         args=args,

@@ -11,7 +11,7 @@ from pathlib import Path
 
 from imdb_workload_common import (
     GUCDict,
-    load_sql_groups,
+    load_sql_groups_from_args,
     print_sql_group_statistics,
     validate_common_args,
 )
@@ -90,12 +90,7 @@ def main() -> None:
         ),
         final_level_path_limit=args.final_level_path_limit,
     )
-    sql_groups = load_sql_groups(
-        sqls_dir=args.sqls_dir,
-        workload_name=args.workload_name,
-        skip_template_id_vals=args.skip_template_id_vals,
-        query_id_limit=args.query_id_limit,
-    )
+    sql_groups = load_sql_groups_from_args(args)
     print_sql_group_statistics(sql_groups, args.workload_name)
     run_workload(
         args=args,

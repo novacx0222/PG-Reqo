@@ -321,13 +321,257 @@ python3 /data/robdp/Reqo-PG/build_imdb_hint_sql_csv.py \
 /opt/pgsql/16.2.hint/bin/pg_ctl -D /winhomes/hx68/imdbloadbase/ start
 
 # for source_and_csv in \
-#   "reqo_guc:/data/robdp/imdb-presplit-0710/hint-sql-csv/reqo_guc.csv" \
-#   "robdp_last_level_1x1__0x0:/data/robdp/imdb-presplit-0710/hint-sql-csv/1x1__0x0.csv" \
-#   "robdp_last_level_8x1__0x0:/data/robdp/imdb-presplit-0710/hint-sql-csv/8x1__0x0.csv"
+#   "reqo_guc:/data/robdp/imdb-presplit-0710/hint-sql-csv/reqo_guc.csv"
 # do
 
 for source_and_csv in \
-  "reqo_guc:/data/robdp/imdb-presplit-0710/hint-sql-csv/reqo_guc.csv"
+  "reqo_guc:/data/robdp/imdb-presplit-0710/hint-sql-csv/reqo_guc.csv" \
+  "robdp_last_level_1x1__0x0:/data/robdp/imdb-presplit-0710/hint-sql-csv/1x1__0x0.csv" \
+  "robdp_last_level_8x1__0x0:/data/robdp/imdb-presplit-0710/hint-sql-csv/8x1__0x0.csv"
+do
+  source="${source_and_csv%%:*}"
+  sql_file="${source_and_csv#*:}"
+  cache_dir="/data/robdp/imdb-presplit-0710/encoding/${source}/full"
+  cache_file="${cache_dir}/plans_cache.json"
+
+  echo "===== Collecting raw plan cache for ${source} ====="
+
+  python3 /data/robdp/Reqo-PG/Utils/reqo_encode_sql_save_pt.py \
+    --sql-file "${sql_file}" \
+    --dbname imdbloadbase \
+    --host localhost \
+    --port 5432 \
+    --user hx68 \
+    --stats-dir /data/robdp/Reqo-PG/Data/imdbloadbase/database_statistics \
+    --output-dir "${cache_dir}" \
+    --analyze \
+    --plans-cache-output "${cache_file}" \
+    --plans-cache-only \
+    --statement-timeout-ms 60000 \
+    --min-candidates-per-query 2 \
+    || echo "WARNING: ${source} cache collection failed, continuing..."
+done
+
+/opt/pgsql/16.2.hint/bin/pg_ctl -D /winhomes/hx68/imdbloadbase/ stop
+```
+
+```bash
+# 3. Build shared folds
+python3 /data/robdp/Reqo-PG/build_imdb_fold_splits.py \
+  --source-csv robdp_last_level_1x1__0x0=/data/robdp/imdb-presplit-0710/hint-sql-csv/1x1__0x0.csv \
+  --source-csv robdp_last_level_8x1__0x0=/data/robdp/imdb-presplit-0710/hint-sql-csv/8x1__0x0.csv \
+  --source-csv reqo_guc=/data/robdp/imdb-presplit-0710/hint-sql-csv/reqo_guc.csv \
+  --output-root /data/robdp/imdb-presplit-0710 \
+  --fold 2 \
+  --split-seed 0 \
+  --min-candidates-per-query 2 \
+  --split-granularity template
+  # --split-granularity query
+```
+
+```bash
+# 4. Encode each fold from the raw plan cache:
+#     train computes norm_stats.json; test reuses the train stats.
+for source in \
+  reqo_guc \
+  robdp_last_level_1x1__0x0 \
+  robdp_last_level_8x1__0x0
+do
+  cache_file="/data/robdp/imdb-presplit-0710/encoding/${source}/full/plans_cache.json"
+
+  for fold in 1 2; do
+    echo "===== Encoding ${source} fold ${fold} from cache ====="
+
+    python3 /data/robdp/Reqo-PG/encode_fold_datasets.py \
+      --source-name "${source}" \
+      --fold-id "${fold}" \
+      --fold-sql-root /data/robdp/imdb-presplit-0710/fold_sql \
+      --encoding-root /data/robdp/imdb-presplit-0710/encoding \
+      --dataset-root /data/robdp/Reqo-PG/Data/imdbloadbase/datasets-presplit-0710 \
+      --dbname imdbloadbase \
+      --host localhost \
+      --port 5432 \
+      --user hx68 \
+      --stats-dir /data/robdp/Reqo-PG/Data/imdbloadbase/database_statistics \
+      --plans-cache-input "${cache_file}" \
+      --statement-timeout-ms 60000 \
+      --min-candidates-per-query 2 \
+      --repo-root /data/robdp/Reqo-PG \
+      || echo "WARNING: ${source} fold ${fold} failed, continuing..."
+  done
+done
+```
+
+```bash
+# 5. Train all sources/folds
+for source in \
+  robdp_last_level_1x1__0x0 \
+  robdp_last_level_8x1__0x0 \
+  reqo_guc
+do
+  for fold in 1 2; do
+    echo "===== Training ${source} fold ${fold} ====="
+
+    python3 /data/robdp/Reqo-PG/train_no_split.py \
+      --dbname imdbloadbase \
+      --fold-id "${fold}" \
+      --train-dataset-dir "/data/robdp/Reqo-PG/Data/imdbloadbase/datasets-presplit-0710/${source}/fold_${fold}/train" \
+      --test-dataset-dir "/data/robdp/Reqo-PG/Data/imdbloadbase/datasets-presplit-0710/${source}/fold_${fold}/test" \
+      --output-dir "/data/robdp/Reqo-PG/Results/imdbloadbase/presplit-0710/${source}/fold_${fold}" \
+      --database-statistics-dir /data/robdp/Reqo-PG/Data/imdbloadbase/database_statistics \
+      --save-model \
+      || echo "WARNING: ${source} fold ${fold} failed, continuing..."
+  done
+done
+```
+
+```bash
+# 6. Summarize all groups
+python3 /data/robdp/Reqo-PG/summarize_all_groups.py \
+  --folds-dir /data/robdp/imdb-presplit-0710/folds \
+  --results-path /data/robdp/imdb-presplit-0710/runner_outputs \
+  --robdp-runtime-results-root /data/robdp/imdb-presplit-0710/runner_outputs/robdp \
+  --train-results-root /data/robdp/Reqo-PG/Results/imdbloadbase/presplit-0710 \
+  --groups 1x1__0x0 8x1__0x0 \
+  --output-dir /data/robdp/imdb-presplit-0710/summary
+```
+
+```text
+runner_outputs/original
+runner_outputs/robdp/{parameter_group}
+runner_outputs/robdp_last_level/{parameter_group}
+runner_outputs/reqo_guc
+Results/imdbloadbase/presplit-0710/robdp_last_level_{group} [train]
+Results/imdbloadbase/presplit-0710/reqo_guc [train]
+```
+
+2026-07-29
+
+```bash
+# 0A. Original PostgreSQL runtime: keep ANALYZE
+/opt/pgsql/16.2.0000/bin/pg_ctl -D /winhomes/hx68/imdbloadbase/ start
+
+python3 /data/robdp/Reqo-PG/run_imdb_with_pg.py \
+  --dbname imdbloadbase \
+  --host localhost \
+  --port 5432 \
+  --user hx68 \
+  --sqls-dir /data/robdp/imdb-error-profile-0612 \
+  --workload-name cardinality \
+  --skip-template-id-vals 29 \
+  --query-id-limit 100 \
+  --results-path /data/robdp/imdb-presplit-0710/runner_outputs/original \
+  --statement-timeout 60s \
+  --rounds 1 \
+  --run-mode explain-analyze-json
+
+/opt/pgsql/16.2.0000/bin/pg_ctl -D /winhomes/hx68/imdbloadbase/ stop
+```
+
+```bash
+# 0B. Original RobDP runtime: keep ANALYZE
+/opt/pgsql/16.2.0524/bin/pg_ctl -D /winhomes/hx68/imdbloadbase/ start
+
+python3 /data/robdp/Reqo-PG/run_imdb_with_robdp.py \
+  --dbname imdbloadbase \
+  --host localhost \
+  --port 5432 \
+  --user hx68 \
+  --sqls-dir /data/robdp/imdb-error-profile-0612 \
+  --workload-name cardinality \
+  --skip-template-id-vals 29 \
+  --query-id-limit 100 \
+  --results-path /data/robdp/imdb-presplit-0710/runner_outputs/robdp \
+  --statement-timeout 60s \
+  --rounds 1 \
+  --run-mode explain-analyze-json \
+  --main-objective-id-vals 1 \
+  --retain-strategy-id-vals 1
+
+/opt/pgsql/16.2.0524/bin/pg_ctl -D /winhomes/hx68/imdbloadbase/ stop
+```
+
+```bash
+# 0C. RobDP last-level hints: no ANALYZE
+/opt/pgsql/16.2.0626/bin/pg_ctl -D /winhomes/hx68/imdbloadbase/ start
+
+python3 /data/robdp/Reqo-PG/run_imdb_with_robdp_hints.py \
+  --dbname imdbloadbase \
+  --host localhost \
+  --port 5432 \
+  --user hx68 \
+  --sqls-dir /data/robdp/imdb-error-profile-0612 \
+  --workload-name cardinality \
+  --skip-template-id-vals 29 \
+  --query-id-limit 100 \
+  --results-path /data/robdp/imdb-presplit-0710/runner_outputs/robdp_last_level \
+  --statement-timeout 60s \
+  --rounds 1 \
+  --run-mode explain-json \
+  --main-objective-id-vals 1 \
+  --retain-strategy-id-vals 1 \
+  --final-level-path-limit 13
+
+/opt/pgsql/16.2.0626/bin/pg_ctl -D /winhomes/hx68/imdbloadbase/ stop
+```
+
+```bash
+# 0D. Reqo-GUC hints: no ANALYZE
+/opt/pgsql/16.2.0000/bin/pg_ctl -D /winhomes/hx68/imdbloadbase/ start
+
+python3 /data/robdp/Reqo-PG/run_imdb_with_reqo_guc.py \
+  --dbname imdbloadbase \
+  --host localhost \
+  --port 5432 \
+  --user hx68 \
+  --sqls-dir /data/robdp/imdb-error-profile-0612 \
+  --workload-name cardinality \
+  --skip-template-id-vals 29 \
+  --query-id-limit 100 \
+  --results-path /data/robdp/imdb-presplit-0710/runner_outputs/reqo_guc \
+  --statement-timeout 60s \
+  --rounds 1 \
+  --run-mode explain-json
+
+/opt/pgsql/16.2.0000/bin/pg_ctl -D /winhomes/hx68/imdbloadbase/ stop
+```
+
+```bash
+# 1. Build RobDP hint SQL CSVs
+python3 /data/robdp/Reqo-PG/build_imdb_hint_sql_csv.py \
+  --results-path /data/robdp/imdb-presplit-0710/runner_outputs/robdp_last_level \
+  --sqls-dir /data/robdp/imdb-error-profile-0612 \
+  --workload-name cardinality \
+  --output-dir /data/robdp/imdb-presplit-0710/hint-sql-csv \
+  --query-id-limit 100 \
+  --hint-source robdp \
+  --parameter-groups 1x1/0x0 8x1/0x0
+```
+
+```bash
+# 1. Build Reqo-GUC hint SQL CSV
+python3 /data/robdp/Reqo-PG/build_imdb_hint_sql_csv.py \
+  --results-path /data/robdp/imdb-presplit-0710/runner_outputs \
+  --sqls-dir /data/robdp/imdb-error-profile-0612 \
+  --workload-name cardinality \
+  --output-dir /data/robdp/imdb-presplit-0710/hint-sql-csv \
+  --query-id-limit 100 \
+  --hint-source reqo \
+  --parameter-groups reqo_guc
+```
+
+```bash
+# 2. Run EXPLAIN ANALYZE once per source and save raw plan caches
+/opt/pgsql/16.2.hint/bin/pg_ctl -D /winhomes/hx68/imdbloadbase/ start
+
+# for source_and_csv in \
+#   "reqo_guc:/data/robdp/imdb-presplit-0710/hint-sql-csv/reqo_guc.csv"
+# do
+
+for source_and_csv in \
+  "reqo_guc:/data/robdp/imdb-presplit-0710/hint-sql-csv/reqo_guc.csv" \
+  "robdp_last_level_1x1__0x0:/data/robdp/imdb-presplit-0710/hint-sql-csv/1x1__0x0.csv" \
+  "robdp_last_level_8x1__0x0:/data/robdp/imdb-presplit-0710/hint-sql-csv/8x1__0x0.csv"
 do
   source="${source_and_csv%%:*}"
   sql_file="${source_and_csv#*:}"
@@ -434,11 +678,3 @@ python3 /data/robdp/Reqo-PG/summarize_all_groups.py \
   --output-dir /data/robdp/imdb-presplit-0710/summary
 ```
 
-```text
-runner_outputs/original
-runner_outputs/robdp/{parameter_group}
-runner_outputs/robdp_last_level/{parameter_group}
-runner_outputs/reqo_guc
-Results/imdbloadbase/presplit-0710/robdp_last_level_{group} [train]
-Results/imdbloadbase/presplit-0710/reqo_guc [train]
-```
