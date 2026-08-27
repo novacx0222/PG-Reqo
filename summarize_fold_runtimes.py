@@ -25,6 +25,33 @@ from pathlib import Path
 from statistics import mean
 from typing import Any, Iterable
 
+FOLD_REQUIRED_COLUMNS = {
+    "fold_id",
+    "global_query_idx",
+    "fold_query_idx",
+    "query_group_id",
+    "template_id",
+    "original_query_id",
+    "candidate_count",
+}
+LEGACY_FOLD_COLUMNS = {"eval_fold_id", "train_fold_id", "split", "query_fold_id"}
+
+SELECTION_REQUIRED_COLUMNS = {
+    "fold_id",
+    "eval_fold_id",
+    "train_fold_id",
+    "query_fold_id",
+    "fold_query_idx",
+    "template_id",
+    "original_query_id",
+    "optimal_runtime_ms",
+    "postgres_runtime_ms",
+    "model_runtime_ms",
+    "postgres_candidate_idx",
+    "model_candidate_idx",
+    "optimal_candidate_idx",
+}
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
@@ -155,8 +182,11 @@ def mean_or_blank(values: list[float | None]) -> float | str:
 
 def fold_csvs(folds_dir: Path, fold_source: str) -> list[Path]:
     csvs = sorted(folds_dir.glob(f"{fold_source}_fold_*.csv"))
-    if not csvs:
-        raise ValueError(f"No fold CSVs found: {folds_dir}/{fold_source}_fold_*.csv")
+    if len(csvs) != 2:
+        raise ValueError(
+            "This separate-error-profile workflow expects exactly 2 fold CSVs "
+            f"for source={fold_source!r}; found {len(csvs)} in {folds_dir}."
+        )
     return csvs
 
 
@@ -164,14 +194,33 @@ def load_fold_rows(folds_dir: Path, fold_source: str) -> dict[tuple[int, int, in
     rows = {}
     for fold_csv in fold_csvs(folds_dir, fold_source):
         with fold_csv.open("r", encoding="utf-8", newline="") as file:
-            for row in csv.DictReader(file):
-                if row.get("split") != "test":
-                    continue
+            reader = csv.DictReader(file)
+            missing_columns = sorted(FOLD_REQUIRED_COLUMNS - set(reader.fieldnames or []))
+            if missing_columns:
+                raise ValueError(
+                    f"{fold_csv} is missing required columns: {missing_columns}"
+                )
+            legacy_columns = sorted(LEGACY_FOLD_COLUMNS & set(reader.fieldnames or []))
+            if legacy_columns:
+                raise ValueError(
+                    f"{fold_csv} uses the old train/test fold schema with columns "
+                    f"{legacy_columns}. Regenerate folds with the ownership schema."
+                )
+            for row in reader:
                 fold_id = as_int(row["fold_id"])
+                if fold_id not in {1, 2}:
+                    raise ValueError(
+                        f"{fold_csv} has fold_id={fold_id}; expected 1 or 2."
+                    )
+                eval_fold_id = fold_id
+                train_fold_id = 3 - fold_id
                 template_id = as_int(row["template_id"])
                 original_query_id = as_int(row["original_query_id"])
                 rows[(fold_id, template_id, original_query_id)] = {
                     "fold_id": fold_id,
+                    "eval_fold_id": eval_fold_id,
+                    "train_fold_id": train_fold_id,
+                    "query_fold_id": fold_id,
                     "fold_query_idx": as_int(row["fold_query_idx"]),
                     "global_query_idx": as_int(row["global_query_idx"]),
                     "query_group_id": row["query_group_id"],
@@ -306,12 +355,46 @@ def load_selection_rows(
         trained_results_dir: Path,
 ) -> dict[tuple[int, int, int], dict[str, Any]]:
     rows = {}
-    for selection_csv in sorted(
-            trained_results_dir.glob("fold_*/reqo_fold_*_query_selection.csv")
-    ):
+    selection_csvs = sorted(
+        trained_results_dir.glob("fold_*/reqo_fold_*_query_selection.csv")
+    )
+    if len(selection_csvs) != 2:
+        raise ValueError(
+            "This separate-error-profile workflow expects exactly 2 "
+            f"query-selection CSVs under {trained_results_dir}; "
+            f"found {len(selection_csvs)}."
+        )
+    for selection_csv in selection_csvs:
         with selection_csv.open("r", encoding="utf-8", newline="") as file:
-            for row in csv.DictReader(file):
+            reader = csv.DictReader(file)
+            missing_columns = sorted(
+                SELECTION_REQUIRED_COLUMNS - set(reader.fieldnames or [])
+            )
+            if missing_columns:
+                raise ValueError(
+                    f"{selection_csv} is missing required columns: {missing_columns}"
+                )
+            for row in reader:
                 fold_id = as_int(row["fold_id"])
+                eval_fold_id = as_int(row["eval_fold_id"])
+                train_fold_id = as_int(row["train_fold_id"])
+                query_fold_id = as_int(row["query_fold_id"])
+                if fold_id not in {1, 2} or eval_fold_id != fold_id:
+                    raise ValueError(
+                        f"{selection_csv} has fold_id={fold_id}, "
+                        f"eval_fold_id={eval_fold_id}; expected fold_id 1 or 2 "
+                        "and eval_fold_id == fold_id."
+                    )
+                if train_fold_id != 3 - fold_id:
+                    raise ValueError(
+                        f"{selection_csv} has train_fold_id={train_fold_id}; "
+                        f"expected {3 - fold_id}."
+                    )
+                if query_fold_id != eval_fold_id:
+                    raise ValueError(
+                        f"{selection_csv} has query_fold_id={query_fold_id}; "
+                        f"expected eval_fold_id {eval_fold_id} for selection rows."
+                    )
                 template_id = as_int(row["template_id"])
                 original_query_id = as_int(row["original_query_id"])
                 rows[(fold_id, template_id, original_query_id)] = {
@@ -529,6 +612,9 @@ def write_csv(path: Path, fieldnames: list[str], rows: list[dict[str, Any]]) -> 
 
 FOLD_QUERY_FIELDS = [
     "fold_id",
+    "eval_fold_id",
+    "train_fold_id",
+    "query_fold_id",
     "fold_query_idx",
     "global_query_idx",
     "query_group_id",

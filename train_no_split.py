@@ -157,7 +157,10 @@ def write_pre_split_details(
 ) -> None:
     fieldnames = [
         "fold_id",
+        "eval_fold_id",
+        "train_fold_id",
         "split",
+        "query_fold_id",
         "global_query_idx",
         "fold_query_idx",
         "query_group_id",
@@ -176,6 +179,9 @@ def write_pre_split_details(
                 ("test", test_bundle),
         ):
             fold_query_idx = 0
+            eval_fold_id = fold_id
+            train_fold_id = 3 - fold_id
+            query_fold_id = train_fold_id if split_name == "train" else eval_fold_id
             query_index = bundle["query_index"]
             query_metadata = bundle["query_metadata"]
             query_plans_index_num = bundle["query_plans_index_num"]
@@ -187,7 +193,10 @@ def write_pre_split_details(
                 )
                 writer.writerow({
                     "fold_id": fold_id,
+                    "eval_fold_id": eval_fold_id,
+                    "train_fold_id": train_fold_id,
                     "split": split_name,
+                    "query_fold_id": query_fold_id,
                     "global_query_idx": global_query_idx,
                     "fold_query_idx": fold_query_idx if split_name == "test" else "",
                     "query_group_id": metadata["query_group_id"],
@@ -204,6 +213,11 @@ def main() -> None:
     args = parse_args()
     if args.fold_id <= 0:
         raise ValueError("--fold-id must be positive.")
+    if args.fold_id not in {1, 2}:
+        raise ValueError(
+            "This separate-error-profile branch expects fold_id to be 1 or 2; "
+            f"got {args.fold_id}."
+        )
 
     reqo_config = build_reqo_config(args)
     train_bundle = load_dataset_bundle(args.train_dataset_dir, args.dbname)

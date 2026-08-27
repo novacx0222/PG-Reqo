@@ -8,7 +8,9 @@ query from the same template in the same fold. It writes:
   - fold_sql/<source>/fold_<k>/train.csv
   - fold_sql/<source>/fold_<k>/test.csv
 
-The fold membership CSV keeps the same schema as train.py split outputs.
+The fold membership CSV is an ownership file: fold_<k> contains only queries
+owned by fold k. It does not encode train/test; downstream materialization
+chooses which fold is train and which fold is eval/test.
 The train/test SQL CSVs keep the encoder schema consumed by reqo_encode_sql.py.
 """
 
@@ -35,7 +37,6 @@ SQL_FIELDNAMES = [
 
 FOLD_FIELDNAMES = [
     "fold_id",
-    "split",
     "global_query_idx",
     "fold_query_idx",
     "query_group_id",
@@ -250,7 +251,7 @@ def build_canonical_keys_from_sql_workload(
     return keys
 
 
-def assign_test_folds(
+def assign_folds(
         keys: list[tuple[int, int]],
         fold_count: int,
         split_seed: int,
@@ -270,7 +271,7 @@ def assign_test_folds(
     return assignments
 
 
-def assign_template_test_folds(
+def assign_template_folds(
         keys: list[tuple[int, int]],
         fold_count: int,
         split_seed: int,
@@ -296,20 +297,20 @@ def assign_template_test_folds(
     }
 
 
-def build_test_fold_assignments(
+def build_fold_assignments(
         keys: list[tuple[int, int]],
         fold_count: int,
         split_seed: int,
         split_granularity: str,
 ) -> dict[tuple[int, int], int]:
     if split_granularity == "query":
-        return assign_test_folds(
+        return assign_folds(
             keys=keys,
             fold_count=fold_count,
             split_seed=split_seed,
         )
     if split_granularity == "template":
-        return assign_template_test_folds(
+        return assign_template_folds(
             keys=keys,
             fold_count=fold_count,
             split_seed=split_seed,
@@ -321,25 +322,19 @@ def write_fold_membership_csv(
         output_csv: Path,
         fold_id: int,
         keys: list[tuple[int, int]],
-        test_assignments: dict[tuple[int, int], int],
+        fold_assignments: dict[tuple[int, int], int],
         candidate_counts: dict[tuple[int, int], int],
 ) -> None:
     output_csv.parent.mkdir(parents=True, exist_ok=True)
-    test_idx = 0
+    fold_query_idx = 0
     with output_csv.open("w", encoding="utf-8", newline="") as file:
         writer = csv.DictWriter(file, fieldnames=FOLD_FIELDNAMES)
         writer.writeheader()
         for global_query_idx, (template_id, original_query_id) in enumerate(keys):
-            split = "test" if test_assignments[(template_id, original_query_id)] == fold_id else "train"
-            fold_query_idx: int | str
-            if split == "test":
-                fold_query_idx = test_idx
-                test_idx += 1
-            else:
-                fold_query_idx = ""
+            if fold_assignments[(template_id, original_query_id)] != fold_id:
+                continue
             writer.writerow({
                 "fold_id": fold_id,
-                "split": split,
                 "global_query_idx": global_query_idx,
                 "fold_query_idx": fold_query_idx,
                 "query_group_id": global_query_idx,
@@ -350,6 +345,7 @@ def write_fold_membership_csv(
                     1,
                 ),
             })
+            fold_query_idx += 1
 
 
 def write_sql_csv(
@@ -380,13 +376,18 @@ def main() -> None:
     args = parse_args()
     if args.min_candidates_per_query <= 0:
         raise ValueError("--min-candidates-per-query must be positive.")
+    if args.fold != 2:
+        raise ValueError(
+            "This separate-error-profile branch expects exactly 2 folds; "
+            f"got --fold={args.fold}."
+        )
     if args.query_id_limit is not None and args.query_id_limit < 0:
         raise ValueError("--query-id-limit must be non-negative.")
     if args.warn_if_not_query_granularity and args.split_granularity != "query":
         print(
             "WARNING: separate-error-profile experiments should normally use "
-            "--split-granularity query so every fold profile still sees all "
-            "templates through its train split."
+            "--split-granularity query so every fold gets a representative "
+            "query sample for its own error profile."
         )
 
     source_specs = [parse_source_csv_arg(value) for value in args.source_csv]
@@ -412,7 +413,7 @@ def main() -> None:
         if args.key_policy != "intersection":
             print("WARNING: --key-policy is ignored without --source-csv.")
 
-    test_assignments = build_test_fold_assignments(
+    fold_assignments = build_fold_assignments(
         keys=canonical_keys,
         fold_count=args.fold,
         split_seed=args.split_seed,
@@ -437,11 +438,11 @@ def main() -> None:
     for fold_id in range(1, args.fold + 1):
         test_keys = [
             key for key in canonical_keys
-            if test_assignments[key] == fold_id
+            if fold_assignments[key] == fold_id
         ]
         train_keys = [
             key for key in canonical_keys
-            if test_assignments[key] != fold_id
+            if fold_assignments[key] != fold_id
         ]
 
         for baseline_source in baseline_sources:
@@ -449,7 +450,7 @@ def main() -> None:
                 output_csv=folds_dir / f"{baseline_source}_fold_{fold_id}.csv",
                 fold_id=fold_id,
                 keys=canonical_keys,
-                test_assignments=test_assignments,
+                fold_assignments=fold_assignments,
                 candidate_counts={},
             )
 
@@ -463,7 +464,7 @@ def main() -> None:
                 output_csv=folds_dir / f"{source_name}_fold_{fold_id}.csv",
                 fold_id=fold_id,
                 keys=canonical_keys,
-                test_assignments=test_assignments,
+                fold_assignments=fold_assignments,
                 candidate_counts=candidate_counts,
             )
             train_csv = fold_sql_dir / source_name / f"fold_{fold_id}" / "train.csv"

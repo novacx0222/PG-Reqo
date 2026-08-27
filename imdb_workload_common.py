@@ -17,6 +17,7 @@ from typing import Any
 SQLGroups = dict[int, dict[int, str]]
 GUCDict = dict[str, str | int | float]
 QueryKey = tuple[int, int]
+LEGACY_FOLD_COLUMNS = {"eval_fold_id", "train_fold_id", "split", "query_fold_id"}
 
 RUN_MODE_PREFIXES = {
     "none": "",
@@ -99,8 +100,9 @@ def create_argument_parser(description: str) -> argparse.ArgumentParser:
         choices=("train", "test", "all"),
         default="test",
         help=(
-            "Fold split to load when --fold-id is set. Use all to load train "
-            "and test rows for that fold. Default: test."
+            "Fold ownership slice to load when --fold-id is set. With 2 folds, "
+            "test reads fold_id, train reads the other fold, and all reads both. "
+            "Default: test."
         ),
     )
     parser.add_argument(
@@ -132,6 +134,11 @@ def validate_common_args(args: argparse.Namespace) -> None:
         raise ValueError("--folds-dir and --fold-id must be used together.")
     if args.fold_id is not None and args.fold_id <= 0:
         raise ValueError("--fold-id must be positive.")
+    if args.fold_id is not None and args.fold_id not in {1, 2}:
+        raise ValueError(
+            "This separate-error-profile workflow expects --fold-id to be 1 or 2; "
+            f"got {args.fold_id}."
+        )
 
 
 def csv_int(value: Any, column_name: str, csv_path: Path) -> int:
@@ -150,35 +157,62 @@ def load_fold_query_keys(
         fold_id: int,
         fold_split: str,
 ) -> set[QueryKey]:
-    """Load selected (template_id, original_query_id) keys from a fold CSV."""
-    fold_csv = (
-        folds_dir.expanduser().resolve()
-        / f"{fold_source}_fold_{fold_id}.csv"
-    )
-    if not fold_csv.is_file():
-        raise ValueError(f"Fold membership CSV does not exist: {fold_csv}")
+    """Load selected (template_id, original_query_id) keys from ownership CSVs."""
+    folds_dir = folds_dir.expanduser().resolve()
+    fold_csvs = sorted(folds_dir.glob(f"{fold_source}_fold_*.csv"))
+    if len(fold_csvs) != 2:
+        raise ValueError(
+            "This separate-error-profile branch expects exactly 2 fold files "
+            f"for source={fold_source!r}; found {len(fold_csvs)} in {folds_dir}."
+        )
+
+    if fold_split == "test":
+        owner_fold_ids = [fold_id]
+    elif fold_split == "train":
+        owner_fold_ids = [3 - fold_id]
+    else:
+        owner_fold_ids = [1, 2]
 
     selected_keys: set[QueryKey] = set()
-    with fold_csv.open("r", encoding="utf-8", newline="") as file:
-        reader = csv.DictReader(file)
-        required_columns = {"split", "template_id", "original_query_id"}
-        missing_columns = sorted(required_columns - set(reader.fieldnames or []))
-        if missing_columns:
-            raise ValueError(
-                f"{fold_csv} is missing required columns: {missing_columns}"
-            )
+    required_columns = {
+        "fold_id",
+        "template_id",
+        "original_query_id",
+    }
+    for owner_fold_id in owner_fold_ids:
+        fold_csv = folds_dir / f"{fold_source}_fold_{owner_fold_id}.csv"
+        if not fold_csv.is_file():
+            raise ValueError(f"Fold membership CSV does not exist: {fold_csv}")
 
-        for row in reader:
-            if fold_split != "all" and row["split"] != fold_split:
-                continue
-            selected_keys.add((
-                csv_int(row["template_id"], "template_id", fold_csv),
-                csv_int(row["original_query_id"], "original_query_id", fold_csv),
-            ))
+        with fold_csv.open("r", encoding="utf-8", newline="") as file:
+            reader = csv.DictReader(file)
+            missing_columns = sorted(required_columns - set(reader.fieldnames or []))
+            if missing_columns:
+                raise ValueError(
+                    f"{fold_csv} is missing required columns: {missing_columns}"
+                )
+            legacy_columns = sorted(LEGACY_FOLD_COLUMNS & set(reader.fieldnames or []))
+            if legacy_columns:
+                raise ValueError(
+                    f"{fold_csv} uses the old train/test fold schema with columns "
+                    f"{legacy_columns}. Regenerate folds with the ownership schema."
+                )
+
+            for row in reader:
+                row_fold_id = csv_int(row["fold_id"], "fold_id", fold_csv)
+                if row_fold_id != owner_fold_id:
+                    raise ValueError(
+                        f"{fold_csv} contains row for fold_id={row_fold_id}; "
+                        f"expected {owner_fold_id}."
+                    )
+                selected_keys.add((
+                    csv_int(row["template_id"], "template_id", fold_csv),
+                    csv_int(row["original_query_id"], "original_query_id", fold_csv),
+                ))
 
     if not selected_keys:
         raise ValueError(
-            f"No query keys selected from {fold_csv} for split={fold_split!r}."
+            f"No query keys selected from {folds_dir} for split={fold_split!r}."
         )
     return selected_keys
 

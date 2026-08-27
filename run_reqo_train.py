@@ -43,7 +43,7 @@ def main():
 
     parser.add_argument("--dbname", required=True)
     parser.add_argument("--experiment_name", required=True)
-    parser.add_argument("--k", type=int, default=10)
+    parser.add_argument("--k", type=int, default=2)
     parser.add_argument("--save-model", action="store_true")
 
     parser.add_argument("--batch-size", type=int, default=256)

@@ -87,6 +87,17 @@ def _metadata_for_index(query_metadata, query_index, idx):
     return _normalize_query_metadata(query_metadata[idx], query_group_id)
 
 
+def _two_fold_context(fold_id):
+    if fold_id not in {1, 2}:
+        raise ValueError(
+            "This separate-error-profile workflow expects fold_id to be 1 or 2; "
+            f"got {fold_id}."
+        )
+    eval_fold_id = fold_id
+    train_fold_id = 3 - fold_id
+    return eval_fold_id, train_fold_id
+
+
 def load_query_metadata(dbname, query_index, experiment_name: str):
     """Load optional query metadata aligned with executed_query_index.npy."""
     metadata_path = f'Data/{dbname}/datasets/{experiment_name}/postgresql_{dbname}_executed_query_metadata.npy'
@@ -116,9 +127,13 @@ def write_fold_split_details(
         sample_q_num2,
 ):
     """Write the train/test query split used by one fold."""
+    eval_fold_id, train_fold_id = _two_fold_context(fold_id)
     fieldnames = [
         "fold_id",
+        "eval_fold_id",
+        "train_fold_id",
         "split",
+        "query_fold_id",
         "global_query_idx",
         "fold_query_idx",
         "query_group_id",
@@ -142,6 +157,7 @@ def write_fold_split_details(
                 if sample_q_num1 <= global_query_idx < sample_q_num2
                 else "train"
             )
+            query_fold_id = eval_fold_id if split == "test" else train_fold_id
             if split == "test":
                 fold_query_idx = fold_test_idx
                 fold_test_idx += 1
@@ -150,7 +166,10 @@ def write_fold_split_details(
 
             writer.writerow({
                 "fold_id": fold_id,
+                "eval_fold_id": eval_fold_id,
+                "train_fold_id": train_fold_id,
                 "split": split,
+                "query_fold_id": query_fold_id,
                 "global_query_idx": global_query_idx,
                 "fold_query_idx": fold_query_idx,
                 "query_group_id": metadata["query_group_id"],
@@ -172,8 +191,12 @@ def write_candidate_score_details(
         actual_latency,
 ):
     """Write every test candidate's score, runtime, and selection flags."""
+    eval_fold_id, train_fold_id = _two_fold_context(fold_id)
     fieldnames = [
         "fold_id",
+        "eval_fold_id",
+        "train_fold_id",
+        "query_fold_id",
         "fold_query_idx",
         "query_group_id",
         "template_id",
@@ -218,6 +241,9 @@ def write_candidate_score_details(
                 actual_runtime = float(query_actual_set[candidate_idx])
                 writer.writerow({
                     "fold_id": fold_id,
+                    "eval_fold_id": eval_fold_id,
+                    "train_fold_id": train_fold_id,
+                    "query_fold_id": eval_fold_id,
                     "fold_query_idx": local_query_idx,
                     "query_group_id": metadata["query_group_id"],
                     "template_id": _blank_if_none(metadata["template_id"]),
@@ -255,8 +281,12 @@ def write_query_selection_details(
         actual_latency,
 ):
     """Write per-query plan choices for the best epoch in one fold."""
+    eval_fold_id, train_fold_id = _two_fold_context(fold_id)
     fieldnames = [
         "fold_id",
+        "eval_fold_id",
+        "train_fold_id",
+        "query_fold_id",
         "fold_query_idx",
         "query_group_id",
         "template_id",
@@ -315,6 +345,9 @@ def write_query_selection_details(
             )
             writer.writerow({
                 "fold_id": fold_id,
+                "eval_fold_id": eval_fold_id,
+                "train_fold_id": train_fold_id,
+                "query_fold_id": eval_fold_id,
                 "fold_query_idx": local_query_idx,
                 "query_group_id": metadata["query_group_id"],
                 "template_id": _blank_if_none(metadata["template_id"]),
@@ -522,8 +555,13 @@ def train(dbname, reqo_config, k_i, trainset, testset, save_path, query_plans_in
 
 
 def k_fold_train(
-        dbname: str, experiment_name: str, reqo_config: dict[str, Any], k: int = 10, save_model: bool = False
+        dbname: str, experiment_name: str, reqo_config: dict[str, Any], k: int = 2, save_model: bool = False
 ):
+    if k != 2:
+        raise ValueError(
+            "This separate-error-profile workflow expects exactly 2 folds; "
+            f"got k={k}."
+        )
     save_path = f'Results/{dbname}/{experiment_name}/'
     os.makedirs(save_path, exist_ok=True)
     dataset = np.load(
@@ -611,5 +649,5 @@ if __name__ == '__main__':
         'estimator_fcn_dropout_rate': 0.1
     }
     k_fold_train(
-        dbname, experiment_name="default", reqo_config=reqo_config, k=10, save_model=True
+        dbname, experiment_name="default", reqo_config=reqo_config, k=2, save_model=True
     )

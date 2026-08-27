@@ -144,6 +144,11 @@ def main() -> None:
     args = parse_args()
     if args.fold_id <= 0:
         raise ValueError("--fold-id must be positive.")
+    if args.fold_id not in {1, 2}:
+        raise ValueError(
+            "This separate-error-profile workflow expects --fold-id to be 1 or 2; "
+            f"got {args.fold_id}."
+        )
     if args.min_candidates_per_query <= 0:
         raise ValueError("--min-candidates-per-query must be positive.")
 

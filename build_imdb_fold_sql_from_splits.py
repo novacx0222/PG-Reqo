@@ -2,7 +2,7 @@
 
 Use this after candidate hint SQL CSVs have been generated with a fold-specific
 error profile. The script does not create a new random split. It reads
-folds/<fold-source>_fold_<id>.csv and slices each SOURCE=CSV into:
+folds/<fold-source>_fold_<id>.csv ownership files and slices each SOURCE=CSV into:
 
   fold_sql/<source>/fold_<id>/train.csv
   fold_sql/<source>/fold_<id>/test.csv
@@ -25,6 +25,7 @@ from build_imdb_fold_splits import (
 )
 
 QueryKey = tuple[int, int]
+LEGACY_FOLD_COLUMNS = {"eval_fold_id", "train_fold_id", "split", "query_fold_id"}
 
 
 def parse_args() -> argparse.Namespace:
@@ -84,37 +85,53 @@ def load_fold_keys(
         fold_source: str,
         fold_id: int,
 ) -> dict[str, list[QueryKey]]:
-    fold_csv = (
-        folds_dir.expanduser().resolve()
-        / f"{fold_source}_fold_{fold_id}.csv"
-    )
-    if not fold_csv.is_file():
-        raise ValueError(f"Fold membership CSV does not exist: {fold_csv}")
+    folds_dir = folds_dir.expanduser().resolve()
+    fold_csvs = sorted(folds_dir.glob(f"{fold_source}_fold_*.csv"))
+    if len(fold_csvs) != 2:
+        raise ValueError(
+            "This separate-error-profile branch expects exactly 2 fold files "
+            f"for source={fold_source!r}; found {len(fold_csvs)} in {folds_dir}."
+        )
+    def read_owned_keys(owner_fold_id: int) -> list[QueryKey]:
+        fold_csv = folds_dir / f"{fold_source}_fold_{owner_fold_id}.csv"
+        if not fold_csv.is_file():
+            raise ValueError(f"Fold membership CSV does not exist: {fold_csv}")
 
-    keys_by_split: dict[str, list[QueryKey]] = {
-        "train": [],
-        "test": [],
+        keys: list[QueryKey] = []
+        with fold_csv.open("r", encoding="utf-8", newline="") as file:
+            reader = csv.DictReader(file)
+            missing_columns = sorted(set(FOLD_FIELDNAMES) - set(reader.fieldnames or []))
+            if missing_columns:
+                raise ValueError(
+                    f"{fold_csv} is missing required columns: {missing_columns}"
+                )
+            legacy_columns = sorted(LEGACY_FOLD_COLUMNS & set(reader.fieldnames or []))
+            if legacy_columns:
+                raise ValueError(
+                    f"{fold_csv} uses the old train/test fold schema with columns "
+                    f"{legacy_columns}. Regenerate folds with the ownership schema."
+                )
+
+            for row in reader:
+                row_fold_id = as_int(row["fold_id"], "fold_id", fold_csv)
+                if row_fold_id != owner_fold_id:
+                    raise ValueError(
+                        f"{fold_csv} contains row for fold_id={row_fold_id}; "
+                        f"expected {owner_fold_id}."
+                    )
+                keys.append((
+                    as_int(row["template_id"], "template_id", fold_csv),
+                    as_int(row["original_query_id"], "original_query_id", fold_csv),
+                ))
+        if not keys:
+            raise ValueError(f"{fold_csv} contains no query keys.")
+        return keys
+
+    train_fold_id = 3 - fold_id
+    return {
+        "train": read_owned_keys(train_fold_id),
+        "test": read_owned_keys(fold_id),
     }
-    with fold_csv.open("r", encoding="utf-8", newline="") as file:
-        reader = csv.DictReader(file)
-        missing_columns = sorted(set(FOLD_FIELDNAMES) - set(reader.fieldnames or []))
-        if missing_columns:
-            raise ValueError(
-                f"{fold_csv} is missing required columns: {missing_columns}"
-            )
-
-        for row in reader:
-            split = row["split"]
-            if split not in keys_by_split:
-                raise ValueError(f"Unexpected split {split!r} in {fold_csv}.")
-            keys_by_split[split].append((
-                as_int(row["template_id"], "template_id", fold_csv),
-                as_int(row["original_query_id"], "original_query_id", fold_csv),
-            ))
-
-    if not keys_by_split["train"] or not keys_by_split["test"]:
-        raise ValueError(f"{fold_csv} must contain both train and test rows.")
-    return keys_by_split
 
 
 def available_keys(
@@ -129,6 +146,11 @@ def main() -> None:
     args = parse_args()
     if args.fold_id <= 0:
         raise ValueError("--fold-id must be positive.")
+    if args.fold_id not in {1, 2}:
+        raise ValueError(
+            "This separate-error-profile workflow expects --fold-id to be 1 or 2; "
+            f"got {args.fold_id}."
+        )
     if args.min_candidates_per_query <= 0:
         raise ValueError("--min-candidates-per-query must be positive.")
 
