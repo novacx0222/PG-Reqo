@@ -189,6 +189,7 @@ def write_candidate_score_details(
         query_postgres_cost_i,
         pred_iv,
         actual_latency,
+        runtime_metric="unspecified",
 ):
     """Write every test candidate's score, runtime, and selection flags."""
     eval_fold_id, train_fold_id = _two_fold_context(fold_id)
@@ -204,6 +205,7 @@ def write_candidate_score_details(
         "candidate_idx",
         "candidate_id",
         "actual_runtime_ms",
+        "runtime_metric",
         "postgres_cost",
         "model_score",
         "is_postgres_choice",
@@ -255,6 +257,7 @@ def write_candidate_score_details(
                         candidate_idx,
                     ),
                     "actual_runtime_ms": actual_runtime,
+                    "runtime_metric": runtime_metric,
                     "postgres_cost": float(query_postgres_cost_set[candidate_idx]),
                     "model_score": float(query_pred_set[candidate_idx]),
                     "is_postgres_choice": candidate_idx == postgres_select_idx,
@@ -279,6 +282,7 @@ def write_query_selection_details(
         query_postgres_cost_i,
         pred_iv,
         actual_latency,
+        runtime_metric="unspecified",
 ):
     """Write per-query plan choices for the best epoch in one fold."""
     eval_fold_id, train_fold_id = _two_fold_context(fold_id)
@@ -300,6 +304,7 @@ def write_query_selection_details(
         "model_candidate_id",
         "model_score",
         "model_runtime_ms",
+        "runtime_metric",
         "optimal_candidate_idx",
         "optimal_candidate_id",
         "optimal_runtime_ms",
@@ -369,6 +374,7 @@ def write_query_selection_details(
                 ),
                 "model_score": float(query_pred_set[model_select_idx]),
                 "model_runtime_ms": model_runtime,
+                "runtime_metric": runtime_metric,
                 "optimal_candidate_idx": optimal_select_idx,
                 "optimal_candidate_id": _get_candidate_id(
                     query_plans_index_i,
@@ -537,6 +543,7 @@ def train(dbname, reqo_config, k_i, trainset, testset, save_path, query_plans_in
         query_postgres_cost_i=query_postgres_cost_i,
         pred_iv=best_pred_iv,
         actual_latency=best_actual_latency,
+        runtime_metric=reqo_config.get("runtime_metric", "unspecified"),
     )
     write_candidate_score_details(
         filename=save_path + 'reqo_fold_' + str(k_i) + '_candidate_scores.csv',
@@ -548,6 +555,7 @@ def train(dbname, reqo_config, k_i, trainset, testset, save_path, query_plans_in
         query_postgres_cost_i=query_postgres_cost_i,
         pred_iv=best_pred_iv,
         actual_latency=best_actual_latency,
+        runtime_metric=reqo_config.get("runtime_metric", "unspecified"),
     )
     if save_model:
         torch.save(best_model, save_path + 'reqo_fold_' + str(k_i) + '_model.pth')

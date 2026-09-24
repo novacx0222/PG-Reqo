@@ -37,6 +37,7 @@ FOLD_REQUIRED_COLUMNS = {
 LEGACY_FOLD_COLUMNS = {"eval_fold_id", "train_fold_id", "split", "query_fold_id"}
 
 SELECTION_REQUIRED_COLUMNS = {
+    "runtime_metric",
     "fold_id",
     "eval_fold_id",
     "train_fold_id",
@@ -375,6 +376,12 @@ def load_selection_rows(
                     f"{selection_csv} is missing required columns: {missing_columns}"
                 )
             for row in reader:
+                if row["runtime_metric"] != "execution_time":
+                    raise ValueError(
+                        f"{selection_csv} contains {row['runtime_metric']!r} labels; "
+                        "this summary requires execution_time for every candidate source. "
+                        "Re-encode and retrain; do not relabel legacy CSVs."
+                    )
                 fold_id = as_int(row["fold_id"])
                 eval_fold_id = as_int(row["eval_fold_id"])
                 train_fold_id = as_int(row["train_fold_id"])

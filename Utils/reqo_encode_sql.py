@@ -46,6 +46,11 @@ from pandas import DataFrame
 from torch_geometric.data import Data
 from tqdm import tqdm
 
+from plan_runtime import (
+    RUNTIME_METRIC, RUNTIME_UNIT, RuntimeMetricError,
+    cache_timing_fields, execution_runtime_label, plan_timing_metadata,
+)
+
 
 def normalize_id_value(value: Any) -> Any:
     """Normalize CSV id values while preserving non-numeric ids."""
@@ -203,7 +208,7 @@ def parse_args() -> argparse.Namespace:
         "--analyze",
         action="store_true",
         help=(
-            "Use EXPLAIN ANALYZE. This executes every SQL line and records root actual runtime. "
+            "Use EXPLAIN ANALYZE. This executes every SQL line and records top-level Execution Time. "
             "Use this for training labels, not normal inference."
         ),
     )
@@ -537,7 +542,15 @@ def save_dataset(
         "num_records": len(records),
         "norm_stats": norm_stats_to_json(norm_stats),
         "analyze": analyze,
+        "runtime_metric": RUNTIME_METRIC,
+        "runtime_unit": RUNTIME_UNIT,
+        "censored_labels": sum(bool(r["metadata"].get("runtime_is_censored")) for r in records),
     }
+
+    # Validate before writing either format; never partially convert old labels.
+    if analyze:
+        for rec in records:
+            execution_runtime_label(rec["metadata"])
 
     # -------------------------
     # 1. Save .pt format
@@ -558,10 +571,10 @@ def save_dataset(
         data.metadata = rec["metadata"]
         data.plan = rec["plan"]
 
-        # If EXPLAIN ANALYZE was used, root actual runtime becomes a training label.
-        if "root_actual_total_time_ms" in rec["metadata"]:
+        # Whole-plan labels use statement timing; keep operator timings untouched.
+        if "runtime_label_ms" in rec["metadata"]:
             data.y = torch.tensor(
-                [rec["metadata"]["root_actual_total_time_ms"]],
+                [execution_runtime_label(rec["metadata"])],
                 dtype=torch.float32,
             )
 
@@ -623,10 +636,7 @@ def save_dataset(
         postgres_costs = []
 
         for rec in group:
-            runtime = rec["metadata"].get("root_actual_total_time_ms")
-            if runtime is None:
-                dropped_plans += 1
-                continue
+            runtime = execution_runtime_label(rec["metadata"])
 
             x = rec["x"].astype(np.float32).tolist()
 
@@ -706,6 +716,9 @@ def save_dataset(
 
     summary = {
         "reqo_dataset_dir": str(reqo_dataset_dir.resolve()),
+        "runtime_metric": RUNTIME_METRIC,
+        "runtime_unit": RUNTIME_UNIT,
+        "censored_labels_in_input": dataset_metadata["censored_labels"],
         "written_plans": len(dataset_rows),
         "written_query_groups": len(query_index),
         "dropped_groups": dropped_groups,
@@ -790,7 +803,10 @@ def main() -> None:
                             **item,
                             "sql": item["sql_text"],
                             "plan": explain_doc["Plan"],
+                            **cache_timing_fields(explain_doc, args.analyze),
                         })
+                    except RuntimeMetricError:
+                        raise
                     except Exception as exc:
                         conn.rollback()
                         if (
@@ -839,6 +855,10 @@ def main() -> None:
 
     if not plans_by_row:
         raise RuntimeError("No SQL plans were successfully collected.")
+    # Old caches discard Execution Time. Fail before saving or skipping any rows.
+    for item in plans_by_row:
+        plan_timing_metadata(item, require_label=args.analyze or args.plans_cache_input is not None)
+
     if args.plans_cache_output is not None:
         save_plans_cache(Path(args.plans_cache_output).resolve(), plans_by_row)
     if args.plans_cache_only:
@@ -874,10 +894,12 @@ def main() -> None:
             metadata["template_id"] = item["template_id"]
             metadata["original_query_id"] = item["original_query_id"]
             metadata["candidate_id"] = item["candidate_id"]
+            metadata.update(plan_timing_metadata(
+                item, require_label=args.analyze or args.plans_cache_input is not None,
+            ))
             if "timeout_runtime_ms" in item:
                 # Timeout rows keep their plan shape but use the configured
                 # statement_timeout as the supervised runtime label.
-                metadata["root_actual_total_time_ms"] = float(item["timeout_runtime_ms"])
                 metadata["timed_out"] = bool(item.get("timed_out", True))
                 metadata["timeout_error"] = item.get("timeout_error")
 

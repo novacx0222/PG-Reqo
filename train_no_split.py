@@ -17,10 +17,14 @@ import csv
 from pathlib import Path
 from typing import Any
 
+from Utils.plan_runtime import require_execution_time_dataset, RUNTIME_METRIC, RUNTIME_UNIT
+
 
 def build_reqo_config(args: argparse.Namespace) -> dict[str, Any]:
     """Build the config expected by train.train."""
     return {
+        "runtime_metric": RUNTIME_METRIC,
+        "runtime_unit": RUNTIME_UNIT,
         "batch_size": args.batch_size,
         "learning_rate": args.learning_rate,
         "pairrankingloss_margin": args.pairrankingloss_margin,
@@ -219,6 +223,9 @@ def main() -> None:
             f"got {args.fold_id}."
         )
 
+    # Reject old .npy labels before importing the GPU training stack.
+    require_execution_time_dataset(args.train_dataset_dir, args.dbname)
+    require_execution_time_dataset(args.test_dataset_dir, args.dbname)
     reqo_config = build_reqo_config(args)
     train_bundle = load_dataset_bundle(args.train_dataset_dir, args.dbname)
     test_bundle = load_dataset_bundle(args.test_dataset_dir, args.dbname)

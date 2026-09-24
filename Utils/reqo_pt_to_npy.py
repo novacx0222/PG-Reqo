@@ -94,16 +94,18 @@ def build_edge_list_e_by_2(edge_index: Any, query_group_id: Any) -> np.ndarray:
     )
 
 
-def get_runtime_ms(data: Any, metadata: dict[str, Any]) -> float | None:
-    """Get the actual runtime label from data.y or metadata."""
+def get_runtime_ms(data: Any, metadata: dict[str, Any]) -> float:
+    """Use verified statement timing, never an untyped legacy data.y."""
+    from plan_runtime import execution_runtime_label, RuntimeMetricError
+    import math
+
+    runtime = execution_runtime_label(metadata)
     y = get_data_attr(data, "y")
     if y is not None:
-        return float(y.detach().cpu().view(-1)[0].item())
-
-    runtime = metadata.get("root_actual_total_time_ms")
-    if runtime is None:
-        return None
-    return float(runtime)
+        stored = float(y.detach().cpu().view(-1)[0].item())
+        if not math.isclose(stored, runtime, rel_tol=1e-6, abs_tol=1e-6):
+            raise RuntimeMetricError("data.y disagrees with execution_time metadata; re-encode")
+    return runtime
 
 
 def save_object_rows(path: Path, rows: list[list[Any]]) -> None:
@@ -192,6 +194,10 @@ def convert_pt_to_reqo_npy(
     if not data_list:
         raise RuntimeError(f"No data records found in: {pt_file}")
 
+    # Validate all records, including groups that might later be filtered out.
+    for data in data_list:
+        get_runtime_ms(data, get_data_attr(data, "metadata", {}) or {})
+
     grouped: dict[Any, list[Any]] = {}
     for data in data_list:
         query_group_id = get_query_group_id(data)
@@ -222,9 +228,6 @@ def convert_pt_to_reqo_npy(
         for plan_idx, data in enumerate(group):
             metadata = get_data_attr(data, "metadata", {}) or {}
             runtime = get_runtime_ms(data, metadata)
-            if runtime is None:
-                dropped_plans += 1
-                continue
 
             x = data.x.detach().cpu().numpy().astype(np.float32, copy=False)
             edge_list_e_by_2 = build_edge_list_e_by_2(data.edge_index, query_group_id)
@@ -273,6 +276,12 @@ def convert_pt_to_reqo_npy(
 
     summary = {
         "pt_file": str(pt_file.resolve()),
+        "runtime_metric": "execution_time",
+        "runtime_unit": "ms",
+        "censored_labels_in_input": sum(
+            bool((get_data_attr(d, "metadata", {}) or {}).get("runtime_is_censored"))
+            for d in data_list
+        ),
         "reqo_dataset_dir": str(output_dir.resolve()),
         "written_plans": len(dataset_rows),
         "written_query_groups": len(query_index),
