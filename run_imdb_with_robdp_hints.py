@@ -16,7 +16,6 @@ from imdb_workload_common import (
     validate_common_args,
 )
 from run_imdb_with_robdp import (
-    generate_additional_guc_dict_list,
     generate_base_guc_dict,
     parse_args,
     run_workload,
@@ -83,11 +82,7 @@ def main() -> None:
 
     base_guc_dict = generate_base_guc_dict(args)
     additional_guc_dict_list = add_final_level_path_limit(
-        additional_guc_dict_list=generate_additional_guc_dict_list(
-            main_objective_id_vals=args.main_objective_id_vals,
-            retain_strategy_id_vals=args.retain_strategy_id_vals,
-            path_limit=args.path_limit,
-        ),
+        additional_guc_dict_list=[args.parameter_group],
         final_level_path_limit=args.final_level_path_limit,
     )
     sql_groups = load_sql_groups_from_args(args)

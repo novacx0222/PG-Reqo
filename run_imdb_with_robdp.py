@@ -1,11 +1,12 @@
 """Run the IMDb workload against the RobDP PostgreSQL backend.
 
-For every RobDP parameter group, template, query, and round, this script sets
+For one explicitly selected RobDP parameter group, template, query, and round, this script sets
 the required GUCs, selects the template-specific error profiles, executes the
 chosen EXPLAIN mode, and stores both RobDP scores and returned query results.
 """
 
 import argparse
+import re
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -24,49 +25,25 @@ from imdb_workload_common import (
 )
 
 
-def generate_additional_guc_dict_list(
-        main_objective_id_vals: list[int],
-        retain_strategy_id_vals: list[int],
-        path_limit: int,
-) -> list[GUCDict]:
-    """Generate the RobDP parameter groups evaluated by the workload."""
-    additional_guc_dict_list = []
-
-    for main_objective_id in main_objective_id_vals:
-        assert 0 <= main_objective_id <= 16
-
-        # Basic: no retention, e.g., E[Penalty] * 1.
-        additional_guc_dict_list.append({
-            "main_objective_id": main_objective_id,
-            "retain_strategy_id": 0,
-            "final_score_id": main_objective_id,
-            "add_path_limit": 1,
-            "retain_path_limit": 0,
-        })
-        # Local objective only, e.g., E[Penalty] * 8.
-        additional_guc_dict_list.append({
-            "main_objective_id": main_objective_id,
-            "retain_strategy_id": 0,
-            "final_score_id": main_objective_id,
-            "add_path_limit": path_limit,
-            "retain_path_limit": 0,
-        })
-
-        for retain_strategy_id in retain_strategy_id_vals:
-            assert 0 <= retain_strategy_id <= 16
-            if retain_strategy_id == main_objective_id:
-                continue
-
-            # Local objective plus retained paths from another objective.
-            additional_guc_dict_list.append({
-                "main_objective_id": main_objective_id,
-                "retain_strategy_id": retain_strategy_id,
-                "final_score_id": main_objective_id,
-                "add_path_limit": 1,
-                "retain_path_limit": path_limit,
-            })
-
-    return additional_guc_dict_list
+def parse_parameter_group(value: str) -> GUCDict:
+    """Parse add-limit x objective / retain-limit x strategy into one config."""
+    match = re.fullmatch(r"(\d+)x(\d+)(?:__|/)(\d+)x(\d+)", value)
+    if match is None:
+        raise argparse.ArgumentTypeError(
+            "Expected a single group such as 8x1__0x0 or 8x1/0x0"
+        )
+    add_limit, objective, retain_limit, strategy = map(int, match.groups())
+    if add_limit < 1 or not 0 <= objective <= 16 or not 0 <= strategy <= 16:
+        raise argparse.ArgumentTypeError(
+            "add_path_limit must be positive; objective and strategy IDs must be in [0, 16]"
+        )
+    return {
+        "main_objective_id": objective,
+        "retain_strategy_id": strategy,
+        "final_score_id": objective,
+        "add_path_limit": add_limit,
+        "retain_path_limit": retain_limit,
+    }
 
 
 def parse_args(
@@ -109,24 +86,13 @@ def parse_args(
         ),
     )
     parser.add_argument(
-        "--main-objective-id-vals",
-        type=int,
-        nargs="+",
-        default=[0, 1],
-        help="Main objective IDs. Default: 0 1.",
-    )
-    parser.add_argument(
-        "--retain-strategy-id-vals",
-        type=int,
-        nargs="+",
-        default=[0, 1],
-        help="Retain strategy IDs. Default: 0 1.",
-    )
-    parser.add_argument(
-        "--path-limit",
-        type=int,
-        default=8,
-        help="Path limit. Default: 8.",
+        "--parameter-group",
+        type=parse_parameter_group,
+        required=True,
+        help=(
+            "Run exactly one group: <add-limit>x<objective>__<retain-limit>x<strategy>, "
+            "e.g. 8x1__0x0. A slash separator is also accepted."
+        ),
     )
     if add_extra_args is not None:
         add_extra_args(parser)
@@ -310,11 +276,7 @@ def main() -> None:
     validate_common_args(args)
 
     base_guc_dict = generate_base_guc_dict(args)
-    additional_guc_dict_list = generate_additional_guc_dict_list(
-        main_objective_id_vals=args.main_objective_id_vals,
-        retain_strategy_id_vals=args.retain_strategy_id_vals,
-        path_limit=args.path_limit,
-    )
+    additional_guc_dict_list = [args.parameter_group]
     sql_groups = load_sql_groups_from_args(args)
     print_sql_group_statistics(sql_groups, args.workload_name)
     run_workload(
